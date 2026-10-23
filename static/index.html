@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Knowledge Assistant</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="app" id="app">
+  <aside class="sidebar" id="sidebar" aria-label="Conversations">
+    <div class="sidebar-head">
+      <h1 id="assistantName">Knowledge Assistant</h1>
+      <button class="btn primary" id="newChat" type="button">+ New chat</button>
+    </div>
+    <nav class="sessions" id="sessions"></nav>
+    <div class="sidebar-foot"><span id="who"></span><span id="historyInfo"></span></div>
+  </aside>
+
+  <main class="chat" aria-label="Chat">
+    <header class="chat-head">
+      <button class="btn ghost only-mobile" id="menuBtn" type="button" aria-label="Show conversations">☰</button>
+      <span id="chatTitle">New chat</span>
+    </header>
+    <div class="messages" id="messages" aria-live="polite">
+      <div class="empty" id="empty">
+        <h2>Ask about policies, IT, finance or products</h2>
+        <p>Answers cite their sources. Click a citation to see the exact place in the document.</p>
+        <div class="suggestions">
+          <button class="chip" type="button">What was revenue in Q3 2026?</button>
+          <button class="chip" type="button">How many vacation days do I get after 3 years?</button>
+          <button class="chip" type="button">Can I give a gift to staff of a public hospital?</button>
+        </div>
+      </div>
+    </div>
+    <form class="composer" id="composer">
+      <textarea id="input" rows="1" placeholder="Ask a question…" aria-label="Message" maxlength="4000"></textarea>
+      <button class="btn primary" id="send" type="submit">Send</button>
+    </form>
+    <p class="disclaimer">AI-generated answers. Check the highlighted source before relying on them.</p>
+  </main>
+
+  <aside class="viewer" id="viewer" aria-label="Citation viewer" hidden>
+    <header class="viewer-head">
+      <div>
+        <div class="viewer-label" id="viewerLabel">Source</div>
+        <div class="viewer-title" id="viewerTitle"></div>
+      </div>
+      <button class="btn ghost" id="closeViewer" type="button" aria-label="Close source viewer">✕</button>
+    </header>
+    <div class="viewer-body" id="viewerBody"></div>
+  </aside>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>

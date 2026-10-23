@@ -1,0 +1,36 @@
+# Databricks Apps runtime configuration (used when the app is deployed; not used locally).
+# `valueFrom` reads the value of a resource attached to the app (see resources/app.yml),
+# so endpoint / warehouse names follow the deployment target without code changes.
+command: ["uvicorn", "rag_app.api:app", "--app-dir", "src", "--host", "0.0.0.0", "--port", "8000"]
+
+env:
+  - name: LLM_ENDPOINT
+    valueFrom: llm
+  - name: HELPER_LLM_ENDPOINT
+    valueFrom: helper-llm
+  - name: SQL_WAREHOUSE_ID
+    valueFrom: sql-warehouse
+  - name: VS_INDEX
+    value: steampunk.dev_kbdhunga_rag_gold.chunks_index
+  - name: CITATIONS_VIEW
+    value: steampunk.dev_kbdhunga_rag_gold.citation_locations
+  - name: DOCUMENTS_VIEW
+    value: steampunk.dev_kbdhunga_rag_gold.rag_documents
+  - name: PAGE_IMAGE_ROOT
+    value: /Volumes/steampunk/dev_kbdhunga_rag_silver/page_images/
+  - name: HISTORY_TURNS
+    value: "5"
+  - name: NUM_RESULTS
+    value: "8"
+  - name: MAX_CHUNKS_PER_DOC
+    value: "4"
+  # Conversation history store. SQLite inside an app container is lost on restart, so the
+  # deployed app should use Lakebase (Postgres). Switched on in the deployment step:
+  - name: STORE_BACKEND
+    value: sqlite
+  # - name: STORE_BACKEND
+  #   value: postgres
+  # - name: LAKEBASE_INSTANCE
+  #   value: rag-memory-dev
+  - name: ASSISTANT_NAME
+    value: Brightline Knowledge Assistant
