@@ -1,0 +1,662 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAG Assistant Guide</title>
+<meta name="description" content="How the RAG Knowledge Assistant works on Azure Databricks: the application, citations with bounding boxes, memory in Lakebase, service principals, configuration and the GitHub Actions deployment.">
+<style>
+:root {
+  --bg: #f6f5f1; --surface: #ffffff; --surface-2: #f0efea; --text: #1c1c1a; --muted: #5f5e58;
+  --line: #e2e0d9; --accent: #1d5fc4; --accent-soft: #e7effb;
+  --ok: #1e7a45; --ok-soft: #e3f3e9; --warn: #9a5b00; --warn-soft: #fbf0dc;
+  --c-user: #1d5fc4; --c-app: #6b4bb8; --c-data: #b38a00; --c-model: #1e7a45; --c-memory: #c0462b; --c-gh: #3b3b38;
+  --code-bg: #f3f2ee; --shadow: 0 1px 2px rgba(0,0,0,.05);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141413; --surface: #1d1d1b; --surface-2: #252522; --text: #ecebe6; --muted: #a6a59e;
+    --line: #34332f; --accent: #7aa8f0; --accent-soft: #1f2c40;
+    --ok: #5cc98a; --ok-soft: #173325; --warn: #e5a64a; --warn-soft: #3a2b12;
+    --c-user: #7aa8f0; --c-app: #a98ae8; --c-data: #e0b93a; --c-model: #5cc98a; --c-memory: #f08a6f; --c-gh: #c9c8c2;
+    --code-bg: #232320; --shadow: none; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #141413; --surface: #1d1d1b; --surface-2: #252522; --text: #ecebe6; --muted: #a6a59e;
+  --line: #34332f; --accent: #7aa8f0; --accent-soft: #1f2c40;
+  --ok: #5cc98a; --ok-soft: #173325; --warn: #e5a64a; --warn-soft: #3a2b12;
+  --c-user: #7aa8f0; --c-app: #a98ae8; --c-data: #e0b93a; --c-model: #5cc98a; --c-memory: #f08a6f; --c-gh: #c9c8c2;
+  --code-bg: #232320; --shadow: none; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.62 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+a { color: var(--accent); }
+code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .86em; }
+code { background: var(--code-bg); padding: .1em .35em; border-radius: 4px; overflow-wrap: anywhere; }
+pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-x: auto; line-height: 1.45; }
+pre code { background: none; padding: 0; }
+.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); max-width: 1300px; margin: 0 auto; }
+nav.toc { position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto; padding: 28px 14px 28px 22px; border-right: 1px solid var(--line); font-size: 14px; }
+nav.toc .title { font-weight: 700; margin-bottom: 4px; }
+nav.toc .sub { color: var(--muted); font-size: 12.5px; margin-bottom: 16px; }
+nav.toc ol { list-style: none; padding: 0; margin: 0; }
+nav.toc a { color: var(--text); text-decoration: none; display: block; padding: 4px 8px; border-radius: 6px; }
+nav.toc a:hover { background: var(--accent-soft); }
+nav.toc .group { color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: .08em; margin: 14px 8px 4px; }
+main { padding: 36px 44px 90px; min-width: 0; }
+h1 { font-size: clamp(28px, 4vw, 40px); line-height: 1.15; margin: 0 0 10px; letter-spacing: -.01em; }
+.lede { color: var(--muted); font-size: 17.5px; max-width: 72ch; margin: 0 0 18px; }
+section { margin-top: 56px; scroll-margin-top: 16px; }
+section > h2 { font-size: 25px; margin: 0 0 6px; letter-spacing: -.005em; }
+section > .sub { color: var(--muted); margin: 0 0 18px; max-width: 76ch; }
+h3 { font-size: 18.5px; margin: 30px 0 8px; }
+p, li { max-width: 80ch; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin: 14px 0; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; box-shadow: var(--shadow); min-width: 0; }
+.card .label { font-size: 13px; color: var(--muted); }
+.card .value { font-size: 21px; font-weight: 650; margin-top: 2px; }
+.card .note { font-size: 13px; color: var(--muted); margin-top: 4px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+.box { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; box-shadow: var(--shadow); min-width: 0; }
+.box h4 { margin: 0 0 6px; font-size: 16px; }
+.box.user { border-top: 4px solid var(--c-user); } .box.app { border-top: 4px solid var(--c-app); }
+.box.data { border-top: 4px solid var(--c-data); } .box.model { border-top: 4px solid var(--c-model); }
+.box.memory { border-top: 4px solid var(--c-memory); } .box.gh { border-top: 4px solid var(--c-gh); }
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); margin: 12px 0 6px; }
+table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { background: var(--surface-2); font-weight: 600; white-space: nowrap; }
+tr:last-child td { border-bottom: none; }
+.callout { border-left: 4px solid var(--accent); background: var(--accent-soft); padding: 12px 16px; border-radius: 0 8px 8px 0; margin: 16px 0; max-width: 84ch; }
+.callout.warn { border-color: var(--warn); background: var(--warn-soft); }
+.callout.ok { border-color: var(--ok); background: var(--ok-soft); }
+.steps { counter-reset: s; list-style: none; padding: 0; margin: 12px 0; }
+.steps > li { counter-increment: s; position: relative; padding: 11px 14px 11px 54px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; margin: 8px 0; max-width: none; }
+.steps > li::before { content: counter(s); position: absolute; left: 14px; top: 11px; width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: #fff; font-weight: 700; font-size: 13px; display: grid; place-items: center; }
+.steps > li strong:first-child { display: block; }
+.diagram { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin: 14px 0; overflow-x: auto; }
+.diagram svg { display: block; width: 100%; min-width: 780px; height: auto; }
+.pill { display: inline-block; font-size: 12.5px; font-weight: 600; padding: 1px 9px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line); }
+.tag-ui { color: var(--c-user); } .tag-gh { color: var(--c-gh); } .tag-term { color: var(--c-model); } .tag-auto { color: var(--c-app); }
+details { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; margin: 8px 0; }
+details summary { cursor: pointer; font-weight: 600; }
+.theme-toggle { position: fixed; right: 16px; bottom: 16px; z-index: 5; border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer; box-shadow: var(--shadow); }
+footer { margin-top: 70px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--line); padding-top: 16px; }
+@media (max-width: 920px) {
+  .layout { grid-template-columns: 1fr; }
+  nav.toc { position: static; height: auto; border-right: none; border-bottom: 1px solid var(--line); padding: 16px; }
+  nav.toc ol { columns: 2; column-gap: 14px; }
+  nav.toc .group { break-after: avoid; }
+  main { padding: 22px 16px 70px; }
+}
+@media (max-width: 520px) { nav.toc ol { columns: 1; } }
+@media print { nav.toc, .theme-toggle { display: none; } .layout { display: block; } }
+</style>
+</head>
+<body>
+<button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle color theme">Theme</button>
+<div class="layout">
+<nav class="toc" aria-label="Contents">
+  <div class="title">RAG Assistant Guide</div>
+  <div class="sub">Application, identities, configuration and deployment</div>
+  <ol>
+    <li class="group">The application</li>
+    <li><a href="#overview">1. Overview</a></li>
+    <li><a href="#architecture">2. Architecture</a></li>
+    <li><a href="#question">3. What happens on a question</a></li>
+    <li><a href="#citations">4. Citations and bounding boxes</a></li>
+    <li><a href="#memory">5. Memory in Lakebase</a></li>
+    <li><a href="#ui">6. The user interface</a></li>
+    <li class="group">Identity and security</li>
+    <li><a href="#principals">7. Service principals explained</a></li>
+    <li><a href="#setup">8. Setting up the deployer</a></li>
+    <li><a href="#permissions">9. Who can do what</a></li>
+    <li><a href="#security">10. Security controls</a></li>
+    <li class="group">Configuration and delivery</li>
+    <li><a href="#config">11. Configuration</a></li>
+    <li><a href="#github">12. GitHub Actions</a></li>
+    <li><a href="#quality">13. Tests and quality gates</a></li>
+    <li class="group">Day to day</li>
+    <li><a href="#operate">14. Operating the app</a></li>
+    <li><a href="#local">15. Local development</a></li>
+    <li><a href="#troubleshooting">16. Troubleshooting</a></li>
+    <li><a href="#repo">17. Repository map</a></li>
+    <li><a href="#glossary">18. Glossary</a></li>
+  </ol>
+</nav>
+
+<main>
+<header>
+  <h1>RAG Knowledge Assistant on Azure Databricks</h1>
+  <p class="lede">A chat assistant that answers questions from company documents, cites every fact, and shows exactly where each cited passage sits in the source document: a box drawn on the PDF page or a highlighted span in a text file. It remembers the conversation and facts about the user in Databricks Lakebase, and it is deployed automatically from GitHub.</p>
+  <p class="sub" style="color:var(--muted)">This guide covers the RAG application only. The ETL pipeline that prepares the documents (bronze → silver → gold) is documented separately; here it appears only as the source of the data the app reads.</p>
+</header>
+
+<!-- ===================================================== 1 OVERVIEW -->
+<section id="overview">
+  <h2>1. Overview</h2>
+  <p class="sub">What is running today, and the results of its latest deployment.</p>
+  <div class="cards">
+    <div class="card"><div class="label">Databricks App</div><div class="value">rag-assistant-dev</div><div class="note">Azure workspace <code>adb-7405616448132971</code></div></div>
+    <div class="card"><div class="label">Deployed by</div><div class="value">GitHub Actions</div><div class="note">on every push to <code>main</code></div></div>
+    <div class="card"><div class="label">Smoke test (deployed)</div><div class="value">19 / 19</div><div class="note">end-to-end checks against the live URL</div></div>
+    <div class="card"><div class="label">Evaluation (deployed)</div><div class="value">25 / 25</div><div class="note">correct; every citation has a location</div></div>
+    <div class="card"><div class="label">Unit tests</div><div class="value">53</div><div class="note">91% coverage, plus 4 Lakebase integration tests</div></div>
+  </div>
+  <div class="table-wrap"><table>
+    <tbody>
+      <tr><th>App URL</th><td><a href="https://rag-assistant-dev-7405616448132971.11.azure.databricksapps.com">rag-assistant-dev-7405616448132971.11.azure.databricksapps.com</a> (Databricks sign-in required)</td></tr>
+      <tr><th>Source code</th><td>GitHub <code>DhunganaKB/databricks-rag-assistant</code></td></tr>
+      <tr><th>Answer model</th><td><code>databricks-claude-sonnet-5-5</code></td></tr>
+      <tr><th>Helper model</th><td><code>databricks-claude-haiku-5-5</code> (query rewriting, titles, summaries, memory extraction, evaluation judge)</td></tr>
+      <tr><th>Knowledge</th><td>Vector Search index <code>steampunk.dev_kbdhunga_rag_gold.chunks_index</code> (84 chunks from 13 documents)</td></tr>
+      <tr><th>Memory</th><td>Lakebase instance <code>rag-memory-dev</code>, database <code>rag_app</code>, schema <code>rag_memory</code></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ===================================================== 2 ARCHITECTURE -->
+<section id="architecture">
+  <h2>2. Architecture</h2>
+  <p class="sub">The app is a Python web service (FastAPI) running inside <strong>Databricks Apps</strong>, Databricks' managed hosting for web applications. Everything it talks to is a Databricks-managed service in the same workspace.</p>
+  <div class="diagram" role="img" aria-label="Architecture: a user's browser talks to the Databricks App, which calls Vector Search, the Claude models, a SQL warehouse, a Unity Catalog volume and Lakebase. GitHub Actions deploys the app as the deployment service principal.">
+  <svg viewBox="0 0 1040 520" xmlns="http://www.w3.org/2000/svg" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13">
+    <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+    <!-- user -->
+    <rect x="20" y="40" width="190" height="78" rx="12" fill="var(--surface-2)" stroke="var(--c-user)" stroke-width="2"/>
+    <text x="115" y="70" text-anchor="middle" font-weight="700" fill="var(--text)">User (browser)</text>
+    <text x="115" y="90" text-anchor="middle" fill="var(--muted)">signs in with Databricks</text>
+    <text x="115" y="107" text-anchor="middle" fill="var(--muted)">(Microsoft Entra ID)</text>
+    <!-- github -->
+    <rect x="20" y="370" width="190" height="96" rx="12" fill="var(--surface-2)" stroke="var(--c-gh)" stroke-width="2"/>
+    <text x="115" y="398" text-anchor="middle" font-weight="700" fill="var(--text)">GitHub Actions</text>
+    <text x="115" y="418" text-anchor="middle" fill="var(--muted)">test → deploy → verify</text>
+    <text x="115" y="436" text-anchor="middle" fill="var(--muted)">signs in as</text>
+    <text x="115" y="453" text-anchor="middle" fill="var(--text)" font-weight="600">sp-rag-deployer</text>
+    <!-- app -->
+    <rect x="300" y="150" width="330" height="210" rx="14" fill="var(--surface)" stroke="var(--c-app)" stroke-width="2.5"/>
+    <text x="465" y="178" text-anchor="middle" font-weight="700" fill="var(--c-app)">Databricks App: rag-assistant-dev</text>
+    <text x="465" y="198" text-anchor="middle" fill="var(--muted)">FastAPI + chat UI · runs as its own service principal</text>
+    <text x="320" y="228" fill="var(--text)">1  identify user, load session</text>
+    <text x="320" y="250" fill="var(--text)">2  short- and long-term memory</text>
+    <text x="320" y="272" fill="var(--text)">3  rewrite follow-up question</text>
+    <text x="320" y="294" fill="var(--text)">4  hybrid search over the index</text>
+    <text x="320" y="316" fill="var(--text)">5  answer with [n] citations + boxes</text>
+    <text x="320" y="338" fill="var(--text)">6  save the turn · background: memory</text>
+    <!-- services -->
+    <rect x="740" y="30" width="280" height="62" rx="10" fill="var(--surface)" stroke="var(--c-data)" stroke-width="2"/>
+    <text x="880" y="56" text-anchor="middle" font-weight="700" fill="var(--text)">Vector Search index</text>
+    <text x="880" y="76" text-anchor="middle" fill="var(--muted)">gold.chunks_index (hybrid search)</text>
+    <rect x="740" y="108" width="280" height="62" rx="10" fill="var(--surface)" stroke="var(--c-model)" stroke-width="2"/>
+    <text x="880" y="134" text-anchor="middle" font-weight="700" fill="var(--text)">Model serving endpoints</text>
+    <text x="880" y="154" text-anchor="middle" fill="var(--muted)">Claude Sonnet 5.5 · Claude Haiku 5.5</text>
+    <rect x="740" y="186" width="280" height="62" rx="10" fill="var(--surface)" stroke="var(--c-data)" stroke-width="2"/>
+    <text x="880" y="212" text-anchor="middle" font-weight="700" fill="var(--text)">SQL warehouse</text>
+    <text x="880" y="232" text-anchor="middle" fill="var(--muted)">citation_locations, rag_documents views</text>
+    <rect x="740" y="264" width="280" height="62" rx="10" fill="var(--surface)" stroke="var(--c-data)" stroke-width="2"/>
+    <text x="880" y="290" text-anchor="middle" font-weight="700" fill="var(--text)">Unity Catalog volume</text>
+    <text x="880" y="310" text-anchor="middle" fill="var(--muted)">silver.page_images (PDF page images)</text>
+    <rect x="740" y="342" width="280" height="62" rx="10" fill="var(--surface)" stroke="var(--c-memory)" stroke-width="2"/>
+    <text x="880" y="368" text-anchor="middle" font-weight="700" fill="var(--text)">Lakebase (Postgres)</text>
+    <text x="880" y="388" text-anchor="middle" fill="var(--muted)">rag-memory-dev / rag_app / rag_memory</text>
+    <!-- ETL source -->
+    <rect x="740" y="440" width="280" height="56" rx="10" fill="var(--surface-2)" stroke="var(--line)" stroke-dasharray="5 4"/>
+    <text x="880" y="464" text-anchor="middle" fill="var(--muted)">ETL project (documented separately)</text>
+    <text x="880" y="482" text-anchor="middle" fill="var(--muted)">produces the index, views and page images</text>
+    <!-- arrows -->
+    <path d="M210 80 C 260 80, 280 160, 300 190" fill="none" stroke="var(--c-user)" stroke-width="2" marker-end="url(#a)"/>
+    <text x="230" y="140" fill="var(--c-user)" font-size="12">HTTPS</text>
+    <path d="M210 418 C 260 418, 280 360, 330 362" fill="none" stroke="var(--c-gh)" stroke-width="2" marker-end="url(#a)"/>
+    <text x="226" y="396" fill="var(--c-gh)" font-size="12">deploys</text>
+    <line x1="630" y1="200" x2="736" y2="62" stroke="var(--muted)" stroke-width="1.8" marker-end="url(#a)"/>
+    <line x1="630" y1="220" x2="736" y2="139" stroke="var(--muted)" stroke-width="1.8" marker-end="url(#a)"/>
+    <line x1="630" y1="245" x2="736" y2="217" stroke="var(--muted)" stroke-width="1.8" marker-end="url(#a)"/>
+    <line x1="630" y1="275" x2="736" y2="295" stroke="var(--muted)" stroke-width="1.8" marker-end="url(#a)"/>
+    <line x1="630" y1="310" x2="736" y2="372" stroke="var(--c-memory)" stroke-width="1.8" marker-end="url(#a)"/>
+    <line x1="880" y1="440" x2="880" y2="408" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#a)"/>
+  </svg>
+  </div>
+  <div class="grid2">
+    <div class="box app"><h4>Databricks App</h4><p>Hosts the web service and its user interface at a Databricks URL. It handles sign-in for you: only signed-in workspace users can reach the app, and the app learns who they are from a header Databricks adds. The app runs as its own service principal (see <a href="#principals">section 7</a>).</p></div>
+    <div class="box data"><h4>Vector Search index</h4><p>Holds every document chunk as a vector (meaning) plus its text (keywords). A <em>hybrid</em> query matches both, so "SEV2" or "401(k)" are found exactly while paraphrases are still understood. Every result also carries its citation location.</p></div>
+    <div class="box model"><h4>Model serving endpoints</h4><p>Claude Sonnet 5.5 writes the answers. Claude Haiku 5.5, faster and cheaper, does the small jobs: rewriting follow-ups, titling chats, summarizing older turns, extracting memories.</p></div>
+    <div class="box data"><h4>SQL warehouse + volume</h4><p>Used only by the source viewer: the warehouse looks up the boxes and page images of a citation, and the volume stores the page images the boxes are drawn on.</p></div>
+    <div class="box memory"><h4>Lakebase</h4><p>Databricks' managed PostgreSQL. It stores conversations, the running summary, long-term facts about each user, and feedback, with millisecond reads and writes. Nothing is stored on the app's machine.</p></div>
+    <div class="box gh"><h4>GitHub Actions</h4><p>Tests every change and, for changes merged to <code>main</code>, deploys the app and verifies the deployed version. It signs in as the deployment service principal <code>sp-rag-deployer</code>.</p></div>
+  </div>
+</section>
+
+<!-- ===================================================== 3 QUESTION FLOW -->
+<section id="question">
+  <h2>3. What happens when someone asks a question</h2>
+  <p class="sub">One request to <code>POST /api/chat</code>. The logic lives in <code>src/rag_app/agent.py</code>; typical total time is 2–5 seconds.</p>
+  <ol class="steps">
+    <li><strong>Identify the user</strong>Databricks Apps adds the header <code>X-Forwarded-Email</code> after sign-in. The app takes the user identity only from this header, never from the request body, so nobody can pretend to be someone else.</li>
+    <li><strong>Load or create the conversation</strong>A new chat gets a new <code>session_id</code>. An existing one must belong to this user; anyone else's session id behaves as "not found".</li>
+    <li><strong>Protect against duplicates</strong>Each message carries a <code>client_message_id</code>. If the browser retries after a network hiccup, the stored answer is returned instead of answering twice.</li>
+    <li><strong>Load memory</strong><em>Short-term:</em> the last 5 question/answer pairs word for word, plus a summary of anything older. <em>Long-term:</em> up to 10 facts the user shared in earlier conversations (e.g. "User is a contractor in the Rotterdam office.").</li>
+    <li><strong>Rewrite the follow-up</strong>"And in New York?" becomes "What is the hotel limit in New York?" using the conversation, so the search finds the right passages. The first question of a chat is used as is.</li>
+    <li><strong>Search the knowledge base</strong>Hybrid search returns 24 candidates. At most 4 chunks per document are kept (so one long document can't crowd out others), then the top 8 are numbered <code>[1]</code>…<code>[8]</code>. Temporary service errors are retried automatically.</li>
+    <li><strong>Write the answer</strong>Claude Sonnet receives the rules, the user's known facts, the conversation summary, the last 5 turns, and the numbered passages. The rules: use only the passages, cite every fact with <code>[n]</code>, say so if the answer isn't there, and ignore instructions hidden inside documents.</li>
+    <li><strong>Attach the citations</strong>Each <code>[n]</code> in the answer is mapped back to its passage, together with that passage's location: page boxes for PDFs, a character/line span for text files.</li>
+    <li><strong>Save the turn</strong>Question, answer, citations (with boxes), the rewritten query and timing are written to Lakebase in one transaction.</li>
+    <li><strong>Background housekeeping (after the answer is sent)</strong>Title the chat (first turn), fold turns that left the 5-turn window into the summary, and every 3 turns extract durable facts about the user. These never delay or break the answer.</li>
+  </ol>
+</section>
+
+<!-- ===================================================== 4 CITATIONS -->
+<section id="citations">
+  <h2>4. Citations and bounding boxes</h2>
+  <p class="sub">Every cited passage can be shown in its original place, and the location data travels with the answer.</p>
+  <div class="grid2">
+    <div class="box data"><h4>PDF and Office documents: boxes</h4>
+      <p>The ETL rendered each page as an image and recorded, for every chunk, rectangles <code>(page, x0, y0, x1, y1)</code> as fractions of the page width and height, with (0,0) at the top-left corner.</p>
+      <p>The viewer places transparent boxes over the page image using percentages (<code>left = x0 × 100%</code>), so they stay aligned at any screen size. A dashed box marks an estimated sub-region of a long paragraph.</p></div>
+    <div class="box data"><h4>Text documents: spans</h4>
+      <p>Plain-text files have no page image, so the location is the exact character range <code>[char_start, char_end)</code> and line range in the stored document text.</p>
+      <p>The viewer shows the document and draws one box around that range, scrolled into view: the text equivalent of a page box.</p></div>
+  </div>
+  <pre><code>"citations": [{
+  "n": 1, "title": "Quarterly Business Review - Q3 2026", "section": "… > 2. Financial results",
+  "doc_format": "paged", "pages": [1],
+  "boxes": [{ "page": 1, "x0": 0.130, "y0": 0.296, "x1": 0.641, "y1": 0.447, "estimated": false }],
+  "span": null
+}]</code></pre>
+  <p>Programs that aren't browsers can request the page with the boxes already drawn: <code>GET /api/citations/{chunk_id}/pages/{page}/annotated.png</code>.</p>
+</section>
+
+<!-- ===================================================== 5 MEMORY -->
+<section id="memory">
+  <h2>5. Memory in Lakebase</h2>
+  <p class="sub">All conversation data lives in Databricks. The deployed app uses its own database (<code>rag_app</code>), separate from local development (<code>databricks_postgres</code>).</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Table (schema <code>rag_memory</code>)</th><th>Memory type</th><th>Contents</th></tr></thead>
+    <tbody>
+      <tr><td><code>sessions</code></td><td>short-term</td><td>One row per conversation: owner, title, number of turns, <strong>running summary</strong> of older turns</td></tr>
+      <tr><td><code>messages</code></td><td>short-term</td><td>Every question and answer, with citations (including boxes), the rewritten search query and latency</td></tr>
+      <tr><td><code>user_memories</code></td><td>long-term</td><td>Facts a user stated about themselves (office, role, contract type, answer preferences), one row each</td></tr>
+      <tr><td><code>feedback</code></td><td>quality</td><td>Thumbs up/down and comments per answer</td></tr>
+      <tr><td><code>schema_migrations</code></td><td>operations</td><td>Which database changes have been applied</td></tr>
+    </tbody>
+  </table></div>
+  <div class="grid2">
+    <div class="box memory"><h4>Short-term memory (one conversation)</h4>
+      <ul>
+        <li>The last <strong>5</strong> question/answer pairs go to the model word for word.</li>
+        <li>When a turn falls out of that window, it is folded into a 150-word running summary.</li>
+        <li>From turn 7 on, the model therefore sees "summary of turns 1…n−5" plus "the last 5 turns", so long chats keep their context while the prompt stays small.</li>
+      </ul></div>
+    <div class="box memory"><h4>Long-term memory (across conversations)</h4>
+      <ul>
+        <li>Every 3 turns, the helper model extracts facts the user stated <em>about themselves</em>.</li>
+        <li>Sensitive information (health, religion, credentials, IDs, phone numbers, email addresses, salary…) is excluded twice: by the instructions and by a pattern filter.</li>
+        <li>Duplicates are rejected by the database itself.</li>
+        <li>Facts personalize answers, but company documents always win.</li>
+        <li>Users see and delete them under <em>What do you remember about me?</em>. Deletion is permanent.</li>
+      </ul></div>
+  </div>
+  <div class="callout">Example from the live smoke test: in one chat the user said <em>"I'm a contractor working in the Rotterdam office."</em> In a brand-new chat, <em>"Am I eligible for paid time off?"</em> was answered with <em>"Contractors are not eligible for paid time off under this policy [1]…"</em>.</div>
+</section>
+
+<!-- ===================================================== 6 UI -->
+<section id="ui">
+  <h2>6. The user interface</h2>
+  <div class="grid2">
+    <div class="box user"><h4>Left: conversations</h4><p>New chat, the list of your previous chats (titled automatically), delete a chat, and <em>What do you remember about me?</em> to view or forget long-term memories.</p></div>
+    <div class="box user"><h4>Middle: chat</h4><p>Answers with clickable <code>[n]</code> markers, the list of sources under each answer, how many history turns were used, the search actually run, and 👍/👎 feedback.</p></div>
+    <div class="box user"><h4>Right: source viewer</h4><p>Opens on the first citation automatically. Shows the PDF page with the boxes, or the text document with the cited span boxed, plus a link to download the annotated page.</p></div>
+  </div>
+</section>
+
+<!-- ===================================================== 7 PRINCIPALS -->
+<section id="principals">
+  <h2>7. Service principals explained</h2>
+  <p class="sub">A <strong>service principal</strong> is a non-human Databricks account: an identity for software instead of a person. It can be given exactly the permissions a program needs, and it appears in audit logs under its own name.</p>
+  <h3>Why not use a personal account?</h3>
+  <ul>
+    <li><strong>Continuity:</strong> a deployment that depends on a person breaks when their password changes, their session expires, or they leave.</li>
+    <li><strong>Least privilege:</strong> a person usually has far more rights than a deployment needs. A service principal gets only what the job requires.</li>
+    <li><strong>Accountability:</strong> audit logs show "the pipeline did this", not a person.</li>
+  </ul>
+  <h3>The two service principals in this solution</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th></th><th>1. Deployment service principal</th><th>2. App service principal</th></tr></thead>
+    <tbody>
+      <tr><th>Name / ID</th><td><code>sp-rag-deployer</code><br>Application ID <code>79aa523d-36ef-4520-8623-855a5f92c5a8</code></td><td>created automatically for the app<br>Application ID <code>6eaeeb2e-e05e-4498-bf47-1f60374dfbdb</code></td></tr>
+      <tr><th>Created by</th><td>you, once, in the Databricks UI</td><td>Databricks, when the app was first deployed</td></tr>
+      <tr><th>Used by</th><td>GitHub Actions, to sign in and deploy</td><td>the running app, for every request</td></tr>
+      <tr><th>Credentials</th><td>Application ID + OAuth secret, stored as a GitHub secret</td><td>none to manage: Databricks injects them into the app</td></tr>
+      <tr><th>Permissions</th><td>create and update the app; read the gold data and pass read access on; manage the SQL warehouse and the Lakebase instance; own the memory tables</td><td>query the 2 models; use the warehouse; read the index, 2 views and the page-image volume; read/write rows in the memory tables (no schema changes)</td></tr>
+    </tbody>
+  </table></div>
+  <div class="diagram" role="img" aria-label="Chain of identities: GitHub Actions signs in as the deployment service principal, which deploys the app and grants the app service principal its access; the app service principal reads data and writes memory.">
+  <svg viewBox="0 0 1000 170" xmlns="http://www.w3.org/2000/svg" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13">
+    <defs><marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+    <rect x="10" y="40" width="190" height="80" rx="12" fill="var(--surface-2)" stroke="var(--c-gh)" stroke-width="2"/>
+    <text x="105" y="72" text-anchor="middle" font-weight="700" fill="var(--text)">GitHub Actions</text>
+    <text x="105" y="94" text-anchor="middle" fill="var(--muted)">has client ID + secret</text>
+    <rect x="270" y="40" width="210" height="80" rx="12" fill="var(--surface)" stroke="var(--c-user)" stroke-width="2"/>
+    <text x="375" y="72" text-anchor="middle" font-weight="700" fill="var(--text)">sp-rag-deployer</text>
+    <text x="375" y="94" text-anchor="middle" fill="var(--muted)">deployment identity</text>
+    <rect x="550" y="40" width="200" height="80" rx="12" fill="var(--surface)" stroke="var(--c-app)" stroke-width="2"/>
+    <text x="650" y="72" text-anchor="middle" font-weight="700" fill="var(--text)">rag-assistant-dev</text>
+    <text x="650" y="94" text-anchor="middle" fill="var(--muted)">app + its own SP</text>
+    <rect x="820" y="40" width="170" height="80" rx="12" fill="var(--surface)" stroke="var(--c-data)" stroke-width="2"/>
+    <text x="905" y="72" text-anchor="middle" font-weight="700" fill="var(--text)">Data, models,</text>
+    <text x="905" y="92" text-anchor="middle" font-weight="700" fill="var(--text)">Lakebase</text>
+    <line x1="200" y1="80" x2="266" y2="80" stroke="var(--muted)" stroke-width="2" marker-end="url(#b)"/>
+    <text x="233" y="70" text-anchor="middle" fill="var(--muted)" font-size="11.5">signs in as</text>
+    <line x1="480" y1="80" x2="546" y2="80" stroke="var(--muted)" stroke-width="2" marker-end="url(#b)"/>
+    <text x="513" y="70" text-anchor="middle" fill="var(--muted)" font-size="11.5">deploys,</text>
+    <text x="513" y="140" text-anchor="middle" fill="var(--muted)" font-size="11.5">grants access</text>
+    <line x1="750" y1="80" x2="816" y2="80" stroke="var(--muted)" stroke-width="2" marker-end="url(#b)"/>
+    <text x="783" y="70" text-anchor="middle" fill="var(--muted)" font-size="11.5">uses</text>
+  </svg>
+  </div>
+</section>
+
+<!-- ===================================================== 8 SETUP -->
+<section id="setup">
+  <h2>8. Setting up the deployment service principal</h2>
+  <p class="sub">One-time steps, already completed for this environment. Labels show where each step happens: <span class="pill tag-ui">Databricks UI</span> <span class="pill tag-term">Terminal</span> <span class="pill tag-gh">GitHub UI</span> <span class="pill tag-auto">Automatic</span>.</p>
+  <ol class="steps">
+    <li><strong>Create the service principal <span class="pill tag-ui">Databricks UI</span></strong>User icon → <em>Settings</em> → <em>Identity and access</em> → <em>Service principals</em> → <em>Add new</em>. Name <code>sp-rag-deployer</code>, type <em>Databricks managed</em>. Copy the <strong>Application ID</strong>. On <em>Configurations</em>, enable <em>Workspace access</em> only.</li>
+    <li><strong>Generate an OAuth secret <span class="pill tag-ui">Databricks UI</span></strong>Open the service principal → <em>Secrets</em> → <em>Generate secret</em>. Leave <strong>Scopes empty (all APIs)</strong>. A secret limited to e.g. <code>access-management</code> cannot deploy (see <a href="#troubleshooting">troubleshooting</a>). Copy the secret; it's shown once.</li>
+    <li><strong>Grant data access <span class="pill tag-ui">SQL Editor</span></strong>
+<pre><code>GRANT USE CATALOG ON CATALOG steampunk TO `79aa523d-36ef-4520-8623-855a5f92c5a8`;
+GRANT USE SCHEMA, SELECT, MANAGE ON SCHEMA steampunk.dev_kbdhunga_rag_gold   TO `79aa523d-…`;
+GRANT USE SCHEMA, READ VOLUME, MANAGE ON SCHEMA steampunk.dev_kbdhunga_rag_silver TO `79aa523d-…`;</code></pre>
+      <code>MANAGE</code> lets the deployer pass read access on to the app's service principal. It cannot change the data.</li>
+    <li><strong>Grant the warehouse <span class="pill tag-term">Terminal</span></strong>The <em>Serverless Starter Warehouse</em> was created by the system and had no owner, so the UI refused changes. The fix was one full replacement (<code>set</code>) that made you owner, kept <em>users → Can use</em>, and added the deployer as <em>Can manage</em>:
+<pre><code>databricks permissions set warehouses e21be0a5a64a99a6 --json '{"access_control_list": [
+  {"user_name": "kbdhunga@mtu.edu", "permission_level": "IS_OWNER"},
+  {"group_name": "users", "permission_level": "CAN_USE"},
+  {"service_principal_name": "79aa523d-36ef-4520-8623-855a5f92c5a8", "permission_level": "CAN_MANAGE"}]}'</code></pre></li>
+    <li><strong>Grant the Lakebase instance <span class="pill tag-term">Terminal</span></strong>
+<pre><code>databricks permissions update database-instances rag-memory-dev --json '{"access_control_list": [
+  {"service_principal_name": "79aa523d-36ef-4520-8623-855a5f92c5a8", "permission_level": "CAN_MANAGE"}]}'</code></pre></li>
+    <li><strong>Create the app's database <span class="pill tag-term">Terminal</span></strong>As the instance owner, from the repository folder:
+<pre><code>uv run --env-file .env python scripts/post_deploy.py --instance rag-memory-dev --database rag_app \
+    --bootstrap-for 79aa523d-36ef-4520-8623-855a5f92c5a8</code></pre>
+      This creates database <code>rag_app</code> and lets the deployer create its tables there. The deployer then owns them.</li>
+    <li><strong>Store the credentials in GitHub <span class="pill tag-gh">GitHub UI</span></strong>Repository → <em>Settings</em> → <em>Environments</em> → <strong>dev</strong>: variables <code>DATABRICKS_HOST</code> and <code>DATABRICKS_CLIENT_ID</code>, secret <code>DATABRICKS_CLIENT_SECRET</code>. Deployment branches: <code>main</code> only.</li>
+    <li><strong>Everything else <span class="pill tag-auto">Automatic</span></strong>The pipeline creates the app, Databricks creates the app's service principal, and the pipeline grants it access and creates the memory tables. See <a href="#github">section 12</a>.</li>
+  </ol>
+</section>
+
+<!-- ===================================================== 9 PERMISSIONS -->
+<section id="permissions">
+  <h2>9. Who can do what</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Object</th><th>You</th><th>sp-rag-deployer</th><th>App service principal</th><th>Workspace users</th></tr></thead>
+    <tbody>
+      <tr><td>App <code>rag-assistant-dev</code></td><td>Can manage (admin)</td><td>Owner (deployed it)</td><td>runs it</td><td>Can use</td></tr>
+      <tr><td>Gold index + views</td><td>owner</td><td>USE, SELECT, MANAGE</td><td>SELECT</td><td>none</td></tr>
+      <tr><td>Page-image volume</td><td>owner</td><td>READ VOLUME, MANAGE</td><td>READ VOLUME</td><td>none</td></tr>
+      <tr><td>SQL warehouse</td><td>Is owner</td><td>Can manage</td><td>Can use</td><td>Can use</td></tr>
+      <tr><td>Lakebase instance</td><td>Can manage</td><td>Can manage</td><td>connect to <code>rag_app</code></td><td>none</td></tr>
+      <tr><td>Memory tables (<code>rag_app.rag_memory.*</code>)</td><td>none</td><td>owner (creates and changes them)</td><td>SELECT / INSERT / UPDATE / DELETE only</td><td>none</td></tr>
+      <tr><td>Claude endpoints</td><td>Can query</td><td>Can query</td><td>Can query</td><td>Can query</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout warn"><strong>Recommendation:</strong> <code>sp-rag-deployer</code> is currently also a member of the workspace <code>admins</code> group, which gives it far more power than it needs. Remove it from <code>admins</code> (Settings → Identity and access → Groups → admins); the explicit grants above are sufficient.</div>
+</section>
+
+<!-- ===================================================== 10 SECURITY -->
+<section id="security">
+  <h2>10. Security controls</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Risk</th><th>Control</th></tr></thead>
+    <tbody>
+      <tr><td>Someone impersonates another user</td><td>Identity comes only from the platform header set after Databricks sign-in</td></tr>
+      <tr><td>Reading someone else's chats or memories</td><td>Every database query is filtered by the signed-in user; others' sessions return "not found"</td></tr>
+      <tr><td>SQL injection</td><td>User input reaches SQL only as bound parameters; configured table names are validated</td></tr>
+      <tr><td>Reading arbitrary files</td><td>Page images are served only from the configured page-image volume path</td></tr>
+      <tr><td>Malicious text in a document or answer</td><td>The UI inserts text safely (no HTML); the model is told passages are data, not instructions</td></tr>
+      <tr><td>Leaked deployment credentials</td><td>The secret lives only in the GitHub environment <code>dev</code>, released only to jobs on <code>main</code>; it can be rotated in minutes</td></tr>
+      <tr><td>Tampering with the deployed code</td><td>The bundle is deployed into <code>sp-rag-deployer</code>'s private folder, which people cannot write to</td></tr>
+      <tr><td>The app changing its own database schema</td><td>The app's role has data-only rights; only the pipeline applies schema changes</td></tr>
+      <tr><td>Storing sensitive personal facts</td><td>Sensitive categories are excluded from long-term memory; users can view and permanently delete memories</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ===================================================== 11 CONFIG -->
+<section id="config">
+  <h2>11. Configuration: where every setting lives</h2>
+  <p class="sub">The same code runs locally and in Databricks; only configuration differs. Nothing environment-specific is written in the Python code, and the app refuses to start if a required setting is missing.</p>
+  <div class="diagram" role="img" aria-label="Settings flow: GitHub environment variables sign the pipeline in; databricks.yml variables define the app and its resources; resources/app.yml grants access and provides values; app.yaml turns them into environment variables for the app.">
+  <svg viewBox="0 0 1040 250" xmlns="http://www.w3.org/2000/svg" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13">
+    <defs><marker id="c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+    <rect x="10" y="20" width="230" height="210" rx="12" fill="var(--surface)" stroke="var(--c-gh)" stroke-width="2"/>
+    <text x="125" y="46" text-anchor="middle" font-weight="700" fill="var(--text)">GitHub environment "dev"</text>
+    <text x="26" y="80" fill="var(--text)">DATABRICKS_HOST</text>
+    <text x="26" y="102" fill="var(--text)">DATABRICKS_CLIENT_ID</text>
+    <text x="26" y="124" fill="var(--text)">DATABRICKS_CLIENT_SECRET 🔒</text>
+    <text x="26" y="168" fill="var(--muted)">used only to sign the</text>
+    <text x="26" y="188" fill="var(--muted)">pipeline in as sp-rag-deployer</text>
+    <rect x="275" y="20" width="230" height="210" rx="12" fill="var(--surface)" stroke="var(--accent)" stroke-width="2"/>
+    <text x="390" y="46" text-anchor="middle" font-weight="700" fill="var(--text)">databricks.yml (variables)</text>
+    <text x="291" y="80" fill="var(--text)">app_name, app_users_group</text>
+    <text x="291" y="102" fill="var(--text)">gold_schema, page_image_vol.</text>
+    <text x="291" y="124" fill="var(--text)">llm / helper_llm endpoints</text>
+    <text x="291" y="146" fill="var(--text)">warehouse_id (looked up)</text>
+    <text x="291" y="168" fill="var(--text)">lakebase_instance, _database</text>
+    <text x="291" y="200" fill="var(--muted)">which app, which data</text>
+    <rect x="540" y="20" width="230" height="210" rx="12" fill="var(--surface)" stroke="var(--c-app)" stroke-width="2"/>
+    <text x="655" y="46" text-anchor="middle" font-weight="700" fill="var(--text)">resources/app.yml</text>
+    <text x="556" y="80" fill="var(--text)">llm, helper-llm</text>
+    <text x="556" y="102" fill="var(--text)">sql-warehouse</text>
+    <text x="556" y="124" fill="var(--text)">vector-index, citations-view,</text>
+    <text x="556" y="146" fill="var(--text)">documents-view, page-images</text>
+    <text x="556" y="168" fill="var(--text)">memory-db</text>
+    <text x="556" y="200" fill="var(--muted)">= permissions + values</text>
+    <rect x="805" y="20" width="225" height="210" rx="12" fill="var(--surface)" stroke="var(--c-model)" stroke-width="2"/>
+    <text x="917" y="46" text-anchor="middle" font-weight="700" fill="var(--text)">app.yaml → app env</text>
+    <text x="821" y="80" fill="var(--text)">VS_INDEX ← vector-index</text>
+    <text x="821" y="102" fill="var(--text)">LLM_ENDPOINT ← llm</text>
+    <text x="821" y="124" fill="var(--text)">SQL_WAREHOUSE_ID ← …</text>
+    <text x="821" y="146" fill="var(--text)">PGHOST/PGUSER ← memory-db</text>
+    <text x="821" y="168" fill="var(--text)">HISTORY_TURNS = 5 …</text>
+    <text x="821" y="200" fill="var(--muted)">what the Python code reads</text>
+    <line x1="505" y1="125" x2="536" y2="125" stroke="var(--muted)" stroke-width="2" marker-end="url(#c)"/>
+    <line x1="770" y1="125" x2="801" y2="125" stroke="var(--muted)" stroke-width="2" marker-end="url(#c)"/>
+  </svg>
+  </div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>File / place</th><th>Holds</th><th>Example</th><th>Change by</th></tr></thead>
+    <tbody>
+      <tr><td>GitHub → Settings → Environments → <code>dev</code></td><td>The pipeline's sign-in (2 variables, 1 secret)</td><td><code>DATABRICKS_CLIENT_ID</code></td><td>repository admin</td></tr>
+      <tr><td><code>databricks.yml</code></td><td>What gets deployed where: app name, data locations, models, Lakebase, user group</td><td><code>gold_schema: steampunk.dev_kbdhunga_rag_gold</code></td><td>pull request → push to <code>main</code></td></tr>
+      <tr><td><code>resources/app.yml</code></td><td>Everything the app may access, one permission each</td><td><code>vector-index: SELECT</code></td><td>pull request</td></tr>
+      <tr><td><code>app.yaml</code></td><td>How the app starts and its environment variables: values from resources (<code>valueFrom</code>) and fixed behavior (<code>value</code>)</td><td><code>HISTORY_TURNS: "5"</code></td><td>pull request</td></tr>
+      <tr><td><code>.env</code> (local only, never committed)</td><td>Settings for running on your laptop</td><td><code>LAKEBASE_INSTANCE=rag-memory-dev</code></td><td>you</td></tr>
+    </tbody>
+  </table></div>
+  <details><summary>All app environment variables</summary>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Variable</th><th>Deployed value comes from</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>VS_INDEX</code>, <code>CITATIONS_VIEW</code>, <code>DOCUMENTS_VIEW</code></td><td>resources (valueFrom)</td><td>gold index and views (required)</td></tr>
+      <tr><td><code>PAGE_IMAGE_VOLUME</code></td><td>resource (valueFrom → <code>/Volumes/…/page_images</code>)</td><td>where page images are read (required)</td></tr>
+      <tr><td><code>SQL_WAREHOUSE_ID</code></td><td>resource</td><td>warehouse for the viewer (required)</td></tr>
+      <tr><td><code>LLM_ENDPOINT</code>, <code>HELPER_LLM_ENDPOINT</code></td><td>resources</td><td>answer and helper models</td></tr>
+      <tr><td><code>PGHOST</code>, <code>PGUSER</code>, <code>PGDATABASE</code></td><td>set by the <code>memory-db</code> resource</td><td>Lakebase connection</td></tr>
+      <tr><td><code>STORE_BACKEND</code>, <code>PG_SCHEMA</code>, <code>AUTO_MIGRATE</code></td><td><code>postgres</code>, <code>rag_memory</code>, <code>false</code></td><td>memory store; the pipeline applies schema changes</td></tr>
+      <tr><td><code>HISTORY_TURNS</code></td><td>5</td><td>turns sent word for word</td></tr>
+      <tr><td><code>LONG_TERM_MEMORY</code>, <code>MEMORY_EVERY_N_TURNS</code></td><td>true, 3</td><td>long-term memory on, extraction cadence</td></tr>
+      <tr><td><code>NUM_RESULTS</code>, <code>MAX_CHUNKS_PER_DOC</code></td><td>8, 4</td><td>passages given to the model, cap per document</td></tr>
+      <tr><td><code>ASSISTANT_NAME</code></td><td>Brightline Knowledge Assistant</td><td>name shown in the UI</td></tr>
+    </tbody>
+  </table></div>
+  </details>
+</section>
+
+<!-- ===================================================== 12 GITHUB -->
+<section id="github">
+  <h2>12. How GitHub Actions deploys the app</h2>
+  <p class="sub">Three workflow files in <code>.github/workflows/</code>. A push to <code>main</code> (or <em>Actions → deploy → Run workflow</em>) runs the full chain; a pull request runs only the tests.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>File</th><th>Runs when</th><th>Does</th></tr></thead>
+    <tbody>
+      <tr><td><code>ci.yml</code></td><td>pull requests, pushes to other branches, and as the first job of every deployment</td><td>Lint, format check, 53 tests (fails below 80% coverage), check that <code>requirements.txt</code> matches the lock file</td></tr>
+      <tr><td><code>deploy.yml</code></td><td>push to <code>main</code>, manual run</td><td>Runs <code>ci.yml</code>, then <code>_deploy.yml</code> for environment <code>dev</code></td></tr>
+      <tr><td><code>_deploy.yml</code></td><td>called by <code>deploy.yml</code></td><td>The deployment steps below</td></tr>
+    </tbody>
+  </table></div>
+  <ol class="steps">
+    <li><strong>Prepare</strong>Check out the code, install <code>uv</code> and the locked dependencies, install the Databricks CLI (pinned version 1.22.1).</li>
+    <li><strong>Check configuration and identity</strong>Fails with a clear message if a GitHub variable or the secret is missing; signs in and prints <code>deploying as: 79aa523d-…</code>.</li>
+    <li><strong>Validate bundle</strong><code>databricks bundle validate</code> checks <code>databricks.yml</code> and <code>resources/app.yml</code>, and reads the resolved names (app, Lakebase, warehouse, schemas) for later steps.</li>
+    <li><strong>Deploy bundle</strong><code>databricks bundle deploy</code> uploads the code to the deployer's private folder and creates or updates the app, its resources and permissions. On the very first run, Databricks creates the app's service principal here.</li>
+    <li><strong>Grants and database</strong><code>scripts/post_deploy.py</code> (1) gives the app's service principal read access to the gold tables and volume in Unity Catalog, (2) applies pending Lakebase migrations, (3) gives the app data-only access to the memory tables, (4) verifies those grants.</li>
+    <li><strong>Deploy and start the app</strong><code>databricks bundle run</code> installs <code>requirements.txt</code> in the app, starts it, and waits until it reports success.</li>
+    <li><strong>Smoke test</strong><code>scripts/smoke_test.py</code> calls the live app as the pipeline identity. It runs a 7-turn conversation, checks memory, boxes and spans, the source viewer and idempotency, then deletes the data it created.</li>
+    <li><strong>Evaluation gate</strong><code>scripts/run_eval.py</code> asks the live app 25 questions with known answers; a judge model grades them. The run fails below 90% correct. The report is attached to the run as <code>eval-report-dev</code>.</li>
+    <li><strong>Summary</strong>The run page shows the app URL, the commit and the evaluation result.</li>
+  </ol>
+  <div class="callout">The deploy job uses the GitHub environment <code>dev</code>. Its secret is released only to that job and only on <code>main</code>. Two deployments never run at the same time, and a running deployment is never cancelled half-way.</div>
+</section>
+
+<!-- ===================================================== 13 QUALITY -->
+<section id="quality">
+  <h2>13. Tests and quality gates</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Check</th><th>What it proves</th><th>Where it runs</th><th>Latest result</th></tr></thead>
+    <tbody>
+      <tr><td>Unit and API tests (53)</td><td>Logic is correct with all external services replaced by fakes: history window, citations with boxes, memory, privacy, input validation, retries, config, grants</td><td>every PR and deploy</td><td>passed, 91% coverage</td></tr>
+      <tr><td>Lakebase integration tests (4)</td><td>The real Postgres store works: transactions, isolation, de-duplication, cascade delete</td><td>locally (<code>make test-integration</code>)</td><td>passed</td></tr>
+      <tr><td>Smoke test</td><td>The deployed app works end to end</td><td>every deploy</td><td>19/19</td></tr>
+      <tr><td>Evaluation (25 questions)</td><td>Answers are correct, grounded and cited; questions with no answer are declined</td><td>every deploy (gate ≥ 90%)</td><td>25/25 correct, 100% retrieval hit, 100% located</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ===================================================== 14 OPERATE -->
+<section id="operate">
+  <h2>14. Operating the app</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Task</th><th>How</th></tr></thead>
+    <tbody>
+      <tr><td>Find the app in the UI</td><td>App switcher (grid icon, top right) → <em>Databricks Apps</em>. <strong>Clear the "Creator" filter</strong>: the app was created by <code>sp-rag-deployer</code>, not by you.</td></tr>
+      <tr><td>Ship a change</td><td>Commit, push to <code>main</code>, watch <em>Actions → deploy</em>. Ideally use a pull request first, so tests run before merging.</td></tr>
+      <tr><td>Read the app logs</td><td>Databricks Apps → <em>rag-assistant-dev</em> → <em>Logs</em>, or <code>databricks apps logs rag-assistant-dev -p azure</code> (needs an OAuth login: <code>databricks auth login --profile azure</code>; personal access tokens are rejected by Apps).</td></tr>
+      <tr><td>Change a setting</td><td>Edit <code>app.yaml</code> (behavior) or <code>databricks.yml</code> (data, models, names, users) and push. Never edit the deployed app by hand: the next deployment would overwrite it.</td></tr>
+      <tr><td>Change the database</td><td>Add <code>src/rag_app/store/migrations/002_&lt;name&gt;.sql</code>. The pipeline applies it before the new version starts. Prefer additive changes (new columns) so the running version keeps working.</td></tr>
+      <tr><td>Roll back</td><td>Revert the commit on <code>main</code> and push; the previous version is deployed as is.</td></tr>
+      <tr><td>Rotate the secret</td><td>Generate a new secret (scopes empty) on <code>sp-rag-deployer</code>, update <code>DATABRICKS_CLIENT_SECRET</code> in the GitHub environment, delete the old secret. Do this before the secret's expiry date (shown on the <em>Secrets</em> tab).</td></tr>
+      <tr><td>Save cost</td><td>Stop the app when unused (Apps → <em>Stop</em>); the next deployment starts it again.</td></tr>
+      <tr><td>Correlate an error</td><td>Every response carries an <code>x-request-id</code>, which appears in every log line for that request.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ===================================================== 15 LOCAL -->
+<section id="local">
+  <h2>15. Local development</h2>
+  <p class="sub">Run the same app on your laptop against the same Databricks services. It uses its own Lakebase database (<code>databricks_postgres</code>) and still stores nothing on the laptop.</p>
+<pre><code>make install                 # dependencies from uv.lock
+scripts/bootstrap_env.sh     # create .env (git-ignored) with your token
+make migrate                 # create/upgrade the local memory tables
+make run                     # http://localhost:8000
+make smoke                   # end-to-end checks against the local app
+make check                   # lint + tests (what CI runs)
+make eval                    # 25-question evaluation</code></pre>
+</section>
+
+<!-- ===================================================== 16 TROUBLESHOOTING -->
+<section id="troubleshooting">
+  <h2>16. Troubleshooting</h2>
+  <p class="sub">The first five rows are problems actually met while setting this up.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Symptom</th><th>Cause</th><th>Fix</th></tr></thead>
+    <tbody>
+      <tr><td><code>Scopes 'all-apis' are not assigned to the client</code></td><td>The OAuth secret was generated with a limited scope (<code>access-management</code>)</td><td>Generate a new secret with scopes left empty; update GitHub; delete the old one</td></tr>
+      <tr><td><code>PUT requests … with no existing owner must provide a new owner</code></td><td>The system-created warehouse had no owner</td><td><code>databricks permissions set</code> with owner, existing users and the deployer (section 8, step 4)</td></tr>
+      <tr><td>App crashed: <code>PAGE_IMAGE_VOLUME must be …</code></td><td>Apps inject a volume as a <code>/Volumes/…</code> path</td><td>Fixed in code: both forms accepted</td></tr>
+      <tr><td><code>Invalid update mask … securable_kind</code></td><td>Bug in older Databricks CLI versions on app updates</td><td>Fixed by pinning CLI 1.22.1 in the workflow</td></tr>
+      <tr><td>500 with <code>InternalError: Something went wrong</code></td><td>Temporary Databricks service error</td><td>Fixed: transient errors are retried automatically</td></tr>
+      <tr><td>App not listed in Databricks Apps</td><td>List filtered by Creator = you</td><td>Clear the filter</td></tr>
+      <tr><td><code>has no DATABRICKS_… variable/secret</code></td><td>Values set on the repository instead of the <code>dev</code> environment</td><td>Add them under Settings → Environments → dev</td></tr>
+      <tr><td><code>Folder Users is protected</code></td><td>Someone tried to deploy as a person</td><td>Deploy only through GitHub Actions</td></tr>
+      <tr><td>Evaluation gate fails</td><td>Answer quality dropped</td><td>Download <code>eval-report-dev</code> from the run; each failing question has the judge's reason</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ===================================================== 17 REPO -->
+<section id="repo">
+  <h2>17. Repository map</h2>
+<pre><code>databricks.yml              what is deployed where (variables, target dev)
+resources/app.yml           the app and its resources (permissions)
+app.yaml                    app start command and environment variables
+requirements.txt            packages installed in the app (generated from uv.lock)
+src/rag_app/
+  api.py                    web API, identity, request logging
+  agent.py                  one question: memory → rewrite → search → answer → cite → save
+  retriever.py              Vector Search hybrid search; reads boxes/spans
+  documents.py              source viewer: boxes, page images, document text, annotated PNG
+  llm.py                    calls the Claude endpoints
+  prompts.py                all instructions given to the models
+  retry.py                  automatic retry of temporary Databricks errors
+  config.py models.py       settings and data shapes
+  store/postgres.py         Lakebase store
+  store/migrations/*.sql    database changes, applied in order
+  store/sqlite.py           in-memory stand-in used only by tests
+static/                     the web page: index.html, app.js, styles.css
+scripts/
+  post_deploy.py            grants + migrations (pipeline), database bootstrap (once)
+  smoke_test.py             end-to-end checks
+  run_eval.py               25-question evaluation
+  migrate.py                local migrations
+  bootstrap_env.sh          creates .env for local use
+eval/eval_set.json          evaluation questions with expected facts
+tests/                      53 unit/API tests + 4 Lakebase integration tests
+.github/workflows/          ci.yml, deploy.yml, _deploy.yml
+docs/                       BUILD_LOG.md, ARCHITECTURE.md, API.md, DEPLOYMENT.md, this guide</code></pre>
+</section>
+
+<!-- ===================================================== 18 GLOSSARY -->
+<section id="glossary">
+  <h2>18. Glossary</h2>
+  <div class="table-wrap"><table>
+    <tbody>
+      <tr><th>RAG</th><td>Retrieval-augmented generation: find relevant passages first, then let the model answer from them.</td></tr>
+      <tr><th>Chunk</th><td>A passage of a document (≈80 words on average here) that is searched and cited as a unit.</td></tr>
+      <tr><th>Hybrid search</th><td>Search combining meaning (vector similarity) and exact words (keyword match).</td></tr>
+      <tr><th>Bounding box</th><td>A rectangle on a page image marking where a cited passage is.</td></tr>
+      <tr><th>Databricks App</th><td>A web application hosted and secured by Databricks.</td></tr>
+      <tr><th>Service principal</th><td>A non-human Databricks account used by software.</td></tr>
+      <tr><th>OAuth secret</th><td>The password-like credential of a service principal; used with its Application ID.</td></tr>
+      <tr><th>Unity Catalog</th><td>Databricks' governance layer for tables, views, volumes and their permissions.</td></tr>
+      <tr><th>Volume</th><td>A governed folder of files in Unity Catalog (here: page images).</td></tr>
+      <tr><th>Lakebase</th><td>Databricks' managed PostgreSQL database.</td></tr>
+      <tr><th>Asset Bundle</th><td>Files (<code>databricks.yml</code> + resources) that describe what to deploy, deployed with the Databricks CLI.</td></tr>
+      <tr><th>GitHub environment</th><td>A named set of variables and secrets in GitHub, released only to jobs that use it.</td></tr>
+      <tr><th>Migration</th><td>A versioned, ordered change to the database structure.</td></tr>
+      <tr><th>Smoke test / evaluation gate</th><td>Automatic checks of the deployed app; a failure stops the pipeline.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<footer>RAG Knowledge Assistant: application guide. Reflects the deployment of commit <code>9ba1a15</code> on 2026-10-24. The ETL pipeline is documented separately.</footer>
+</main>
+</div>
+<script>
+(function () {
+  var root = document.documentElement, btn = document.getElementById("themeToggle"), key = "rag-guide-theme";
+  try { var saved = localStorage.getItem(key); if (saved) root.setAttribute("data-theme", saved); } catch (e) {}
+  btn.addEventListener("click", function () {
+    var current = root.getAttribute("data-theme");
+    var dark = current ? current === "dark" : window.matchMedia("(prefers-color-scheme: dark)").matches;
+    var next = dark ? "light" : "dark";
+    root.setAttribute("data-theme", next);
+    try { localStorage.setItem(key, next); } catch (e) {}
+  });
+})();
+</script>
+</body>
+</html>
