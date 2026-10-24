@@ -56,7 +56,7 @@ jobs:
         run: uv sync --locked
 
       - name: Install Databricks CLI
-        uses: databricks/setup-cli@v0.295.0
+        uses: databricks/setup-cli@v1.22.1
 
       - name: Check configuration and identity
         run: |

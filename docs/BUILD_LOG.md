@@ -333,6 +333,18 @@ Verified: `bundle validate -t dev` OK (app `rag-assistant-dev`, instance `rag-me
 
 ---
 
+# Part 5: First deployments through GitHub Actions (2026-10-24)
+
+| Run | Failed at | Cause | Fix |
+|---|---|---|---|
+| 1 | Validate bundle | `Scopes 'all-apis' are not assigned to the client`: the service principal's OAuth secret had been generated with only the `access-management` scope (visible only in the raw API output). The identity step showed green because `cmd \| jq` hid the failure | Generate a new secret with no scope restriction (`all-apis`); workflow now runs with `bash -eo pipefail` |
+| 2 | Deploy and start the app | App crashed at startup: `valueFrom` of a **volume** resource yields `/Volumes/<c>/<s>/<v>`, not `c.s.v` | `volume_path()` accepts both forms, strictly validated; tests added |
+| 3 | Deploy bundle | `Invalid update mask ... uc_securable.securable_kind`: CLI v0.295 treated the server-computed `securable_kind` of TABLE resources as drift and tried to update it | Fixed in CLI v1.14.0. Pinned `databricks/setup-cli@v1.22.1`; verified with `bundle plan` against the deployed state (v1.22.1: `securable_kind` → `skip, spec:output_only`) |
+
+Reading app logs needs an OAuth login (`databricks auth login --profile azure`); Apps reject personal access tokens.
+
+---
+
 ## How to reproduce from scratch
 ```bash
 git clone <repo> && cd RAG
