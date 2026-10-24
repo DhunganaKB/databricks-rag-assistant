@@ -271,6 +271,54 @@ Fixes:
 
 ---
 
+# Part 3: Enterprise deployment setup (2026-10-24)
+
+**Goal:** deploy from GitHub to Databricks Apps the standard way. Infrastructure as code, no secrets, separate environments, least privilege, quality gates. The step-by-step guide is in [DEPLOYMENT.md](DEPLOYMENT.md).
+
+## Step 19: Bundle (`databricks.yml`, `resources/app.yml`)
+- **Three targets:**
+  - `dev`: personal, `mode: development`, deployed from a laptop
+  - `staging`: CI on every merge to `main`
+  - `prod`: CI on a release, after approval
+- **Variables:** every per-environment value (app name, gold schema, page-image volume, Lakebase instance and database, models, user groups). The warehouse ID is looked up by name.
+- **App resources:** one permission each (two serving endpoints, warehouse, index, two views, volume, Lakebase database), so the app needs no secrets.
+- **Validation** (`bundle validate`) produced two findings, both fixed:
+  1. **Security:** `/Workspace/Shared` as the bundle folder is writable by every user, so anyone could alter the deployed app. Now staging and prod deploy into the deployer service principal's private folder (`deployer_sp` variable, set by CI from `DATABRICKS_CLIENT_ID`). Verified: a person trying to deploy staging gets `Folder Users is protected`.
+  2. `run_as` is not supported for apps (an app runs as its own SP). Removed.
+
+## Step 20: Environment-agnostic app config
+- `app.yaml` holds no environment values. Everything comes from the app's resources via `valueFrom` (`VS_INDEX`, views, `SQL_WAREHOUSE_ID`, `PAGE_IMAGE_VOLUME`, models). The database resource injects `PGHOST`/`PGUSER`/`PGDATABASE`. `AUTO_MIGRATE=false`: the pipeline owns schema changes.
+- `config.py`: environment-specific settings have no defaults (fail fast); `PAGE_IMAGE_VOLUME` is accepted. Postgres needs `LAKEBASE_INSTANCE` (local) or `PGHOST` (Apps).
+- `store/postgres.py`: in Apps, the Postgres password is the app SP's OAuth token. Locally it's `generate_database_credential`. A database can be selected per environment.
+- `api.py`: identity falls back to `X-Forwarded-User` (service principals calling the app, e.g. the smoke test).
+
+## Step 21: Post-deploy step (`scripts/post_deploy.py`)
+1. Unity Catalog: `USE CATALOG`, `USE SCHEMA`, `SELECT` on the index and views, `READ VOLUME` for the app's SP (explicit and idempotent). **Verified on the workspace:** all 7 statements succeed, including `SELECT` on the vector index.
+2. Lakebase migrations, run as the deployer, which therefore owns the tables.
+3. App SP role: data-only grants (`SELECT/INSERT/UPDATE/DELETE`), `CREATE` revoked, so the app cannot change the schema.
+4. Verification of those grants.
+
+Per-environment isolation: staging uses database `rag_staging` and prod uses its own instance `rag-memory-prod` / `rag_prod`. A one-time `--bootstrap-for <deployer>` (run by the instance owner) creates the database and lets the deployer create its schema.
+
+**Issue 14: the first design would have failed.** It handed the existing `rag_memory` schema to the deployer with `ALTER ... OWNER`. Postgres only allows that for members of the new owner role. Replaced with a fresh database per environment that the deployer owns from the start.
+
+**Verified on Lakebase** in a throwaway database (`rag_ci_selftest`): bootstrap → migration as the deployer → data-only grants to a stand-in app role → verify (DML ok, `CREATE` = False) → idempotent re-run → cleanup (database and role dropped; first attempt at cleanup failed on `REASSIGN OWNED`, fixed by dropping the database first).
+
+## Step 22: Pipelines
+- `ci.yml`: runs on PRs and non-main pushes, and is **reusable** (`workflow_call`) so deploys run it first.
+- `deploy.yml`: merge to `main` → staging; published release → prod (GitHub environment approval); manual dispatch.
+- `_deploy.yml` (reusable): OIDC auth (`id-token: write`, `DATABRICKS_AUTH_TYPE=github-oidc`; fallback `oauth-m2m` + secret) → identity check → validate → deploy → post_deploy → `bundle run` → smoke test → evaluation gate (≥ 0.9) → report artifact and job summary. Concurrency per environment, never cancelled mid-deploy.
+- OIDC audience: read from the workspace metadata endpoint (`token_federation_default_oidc_audiences`) and set explicitly via `DATABRICKS_TOKEN_AUDIENCE`, so the federation policy and the token always match.
+- Pinned `databricks/setup-cli@v0.295.0` (tag verified). `actionlint`: clean.
+- `smoke_test.py --databricks-auth --wipe-memories` and `run_eval.py --base-url ... --databricks-auth` test the **deployed** app as the pipeline identity and clean up after themselves. HTTP-mode evaluation verified against the local app (4/4).
+
+## Step 23: Tests
+48 unit tests (new: volume path, required settings, `PGHOST` acceptance, UC grant statements incl. injection rejection), 4 Lakebase integration tests, lint and `actionlint` clean.
+
+**Not yet exercised (first happens in DEPLOYMENT.md B1/B2):** a real `bundle deploy` of the app, the app SP's OAuth connection to Lakebase, and the GitHub OIDC exchange. These need the service principals and federation policies created in Part A.
+
+---
+
 ## How to reproduce from scratch
 ```bash
 git clone <repo> && cd RAG
@@ -284,7 +332,7 @@ make smoke                      # terminal 2: 20/20 expected
 make eval                       # 25/25 expected on the sample corpus
 ```
 
-## Open items for the deployment step
+## Open items (see DEPLOYMENT.md for the deployment itself)
 1. ~~Create a Lakebase instance; switch `STORE_BACKEND=postgres`; add Postgres integration tests.~~ Done (Part 2). Remaining: ownership/grants on `rag_memory` for the app's service principal.
 2. Add a Databricks Asset Bundle (`databricks.yml` + `resources/app.yml`) declaring the app's resources: serving endpoints (CAN_QUERY), SQL warehouse (CAN_USE), index (SELECT), page-image volume (READ VOLUME), gold views (SELECT), Lakebase (CAN_CONNECT_AND_CREATE).
 3. Add a GitHub Actions deploy workflow: service principal auth via OIDC (no long-lived token), `bundle validate` → `bundle deploy` → `bundle run` → smoke test against the deployed URL → eval gate.

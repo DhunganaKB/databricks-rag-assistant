@@ -1,0 +1,61 @@
+# The Databricks App and everything it is allowed to use.
+#
+# Each entry under `resources` grants the app's own service principal exactly one
+# permission (least privilege) and exposes the value to app.yaml through `valueFrom`.
+# The app therefore needs no tokens or secrets, and the same source code runs in every
+# environment: only these resource bindings differ per target.
+resources:
+  apps:
+    rag_app:
+      name: ${var.app_name}
+      description: RAG knowledge assistant with bounding-box citations and Lakebase memory.
+      source_code_path: ..  # repo root: app.yaml, requirements.txt, src/, static/
+      resources:
+        - name: llm
+          description: Answer model
+          serving_endpoint:
+            name: ${var.llm_endpoint}
+            permission: CAN_QUERY
+        - name: helper-llm
+          description: Query rewrite, titles, summaries, memory extraction
+          serving_endpoint:
+            name: ${var.helper_llm_endpoint}
+            permission: CAN_QUERY
+        - name: sql-warehouse
+          description: Citation viewer queries
+          sql_warehouse:
+            id: ${var.warehouse_id}
+            permission: CAN_USE
+        - name: vector-index
+          description: Gold vector index (retrieval)
+          uc_securable:
+            securable_full_name: ${var.gold_schema}.chunks_index
+            securable_type: TABLE
+            permission: SELECT
+        - name: citations-view
+          description: Gold view with citation boxes and spans
+          uc_securable:
+            securable_full_name: ${var.gold_schema}.citation_locations
+            securable_type: TABLE
+            permission: SELECT
+        - name: documents-view
+          description: Gold view with document text
+          uc_securable:
+            securable_full_name: ${var.gold_schema}.rag_documents
+            securable_type: TABLE
+            permission: SELECT
+        - name: page-images
+          description: Rendered page images the boxes are drawn on
+          uc_securable:
+            securable_full_name: ${var.page_image_volume}
+            securable_type: VOLUME
+            permission: READ_VOLUME
+        - name: memory-db
+          description: Lakebase database for history and memory (sets PGHOST/PGUSER/PGDATABASE)
+          database:
+            instance_name: ${var.lakebase_instance}
+            database_name: ${var.lakebase_database}
+            permission: CAN_CONNECT_AND_CREATE
+      permissions:
+        - group_name: ${var.app_users_group}
+          level: CAN_USE

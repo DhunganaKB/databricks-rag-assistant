@@ -5,8 +5,9 @@ window), citations with bounding boxes (PDF) and spans (TXT), citation viewer en
 the annotated page PNG, idempotent retries, session privacy, and no-answer behavior.
 
     uv run --env-file .env python scripts/smoke_test.py --base-url http://localhost:8000
-    # deployed app (needs an OAuth token):
-    uv run python scripts/smoke_test.py --base-url https://<app-url> --token "$TOKEN"
+    # deployed app, authenticated as the current Databricks identity (CLI profile, or the
+    # pipeline's service principal via GitHub OIDC):
+    uv run python scripts/smoke_test.py --base-url https://<app-url> --databricks-auth
 
 Exit code 0 = all checks passed. Writes the annotated page to output/smoke_annotated.png.
 """
@@ -36,13 +37,31 @@ def main() -> int:
     p.add_argument("--base-url", default="http://localhost:8000")
     p.add_argument("--token", help="Bearer token for a deployed Databricks App")
     p.add_argument(
+        "--databricks-auth",
+        action="store_true",
+        help="authenticate to a deployed app with the Databricks SDK (profile, OAuth or GitHub OIDC)",
+    )
+    p.add_argument(
         "--user",
         default=f"smoke.{uuid.uuid4().hex[:8]}@example.com",
         help="local runs only: X-Forwarded-Email (a fresh user per run keeps memories independent)",
     )
     p.add_argument("--keep", action="store_true", help="keep the smoke-test sessions and memories in Lakebase")
+    p.add_argument(
+        "--wipe-memories",
+        action="store_true",
+        help="also delete the caller's long-term memories afterwards (CI only: the caller is a service principal)",
+    )
     args = p.parse_args()
-    headers = {"Authorization": f"Bearer {args.token}"} if args.token else {"x-forwarded-email": args.user}
+    if args.databricks_auth:
+        from databricks.sdk import WorkspaceClient
+
+        headers = WorkspaceClient().config.authenticate()  # {"Authorization": "Bearer ..."}
+        args.token = "sdk"  # treat like a token run: no header spoofing, no wiping of memories
+    elif args.token:
+        headers = {"Authorization": f"Bearer {args.token}"}
+    else:
+        headers = {"x-forwarded-email": args.user}
     c = httpx.Client(base_url=args.base_url, headers=headers, timeout=180)
 
     health = c.get("/api/health").json()
@@ -196,9 +215,12 @@ def main() -> int:
         created = {sid, msid, a["session_id"], na["session_id"], fresh["session_id"]}
         for session_id in created:
             c.delete(f"/api/sessions/{session_id}")
-        if not args.token:  # only the throwaway local test user: never wipe a real user's memories
+        if not args.token or args.wipe_memories:  # never wipe a real person's memories
             c.delete("/api/memories")
-        print(f"cleaned up {len(created)} smoke-test sessions" + ("" if args.token else " and memories"))
+        print(
+            f"cleaned up {len(created)} smoke-test sessions"
+            + (" and memories" if not args.token or args.wipe_memories else "")
+        )
 
     failed = [n for n, ok, _ in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} checks passed" + (f"; FAILED: {failed}" if failed else ""))

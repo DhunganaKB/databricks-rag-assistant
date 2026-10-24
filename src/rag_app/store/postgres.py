@@ -25,24 +25,35 @@ log = logging.getLogger(__name__)
 MIGRATIONS = Path(__file__).parent / "migrations"
 
 
-def make_pool(workspace_client, instance_name: str, max_size: int = 8):
+def make_pool(workspace_client, instance_name: str | None, max_size: int = 8, database: str | None = None):
+    """Connection pool to Lakebase.
+
+    Locally: LAKEBASE_INSTANCE is set; the host is looked up and each connection gets a
+    fresh credential from generate_database_credential (works with a PAT or OAuth).
+    Databricks Apps: the database resource sets PGHOST/PGUSER/PGDATABASE and the app runs
+    as its service principal (OAuth), whose access token is the Postgres password."""
     import psycopg
     from psycopg_pool import ConnectionPool
 
     w = workspace_client
     host = os.getenv("PGHOST") or w.database.get_database_instance(instance_name).read_write_dns
     user = os.getenv("PGUSER") or w.current_user.me().user_name
-    dbname = os.getenv("PGDATABASE", "databricks_postgres")
+    dbname = database or os.getenv("PGDATABASE", "databricks_postgres")
+
+    def password() -> str:
+        if instance_name:
+            cred = w.database.generate_database_credential(request_id=str(uuid.uuid4()), instance_names=[instance_name])
+            return cred.token
+        return w.config.oauth_token().access_token
 
     class TokenConnection(psycopg.Connection):
         @classmethod
         def connect(cls, conninfo: str = "", **kwargs):
-            cred = w.database.generate_database_credential(request_id=str(uuid.uuid4()), instance_names=[instance_name])
-            kwargs["password"] = cred.token
+            kwargs["password"] = password()
             return super().connect(conninfo, **kwargs)
 
     conninfo = f"host={host} port={os.getenv('PGPORT', '5432')} dbname={dbname} user={user} sslmode=require"
-    log.info("connecting to Lakebase instance=%s host=%s db=%s user=%s", instance_name, host, dbname, user)
+    log.info("connecting to Lakebase host=%s db=%s user=%s", host, dbname, user)
     return ConnectionPool(
         conninfo,
         connection_class=TokenConnection,

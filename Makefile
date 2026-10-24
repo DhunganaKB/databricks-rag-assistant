@@ -1,5 +1,5 @@
 # Common developer commands. Everything runs through uv (locked dependencies).
-.PHONY: install lint format test test-integration migrate run smoke eval requirements check
+.PHONY: install lint format test test-integration migrate run smoke eval requirements check validate deploy-dev
 
 install:            ## create .venv with app + dev dependencies from uv.lock
 	uv sync
@@ -34,3 +34,16 @@ requirements:       ## regenerate requirements.txt (used by Databricks Apps) fro
 	uv export --no-dev --no-hashes --no-emit-project --format requirements-txt -o requirements.txt
 
 check: lint test    ## what CI runs
+
+# --- Databricks deployment (personal dev target; staging/prod deploy only through GitHub Actions)
+export DATABRICKS_BUNDLE_ENGINE := direct
+
+validate:           ## validate the bundle for the dev target (uses your CLI profile / env)
+	databricks bundle validate -t dev
+
+deploy-dev:         ## deploy your personal dev app: bundle -> Lakebase grants -> start
+	databricks bundle deploy -t dev
+	uv run --env-file .env python scripts/post_deploy.py --app rag-assistant-dev --instance rag-memory-dev \
+		--warehouse-id $$SQL_WAREHOUSE_ID --gold-schema steampunk.dev_kbdhunga_rag_gold \
+		--page-image-volume steampunk.dev_kbdhunga_rag_silver.page_images
+	databricks bundle run -t dev rag_app

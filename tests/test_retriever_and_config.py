@@ -59,3 +59,39 @@ def test_settings_validate_identifiers():
         make_settings(page_image_root="/etc/")
     with pytest.raises(ValueError):
         make_settings(history_turns=50)
+
+
+def test_volume_path_from_apps_binding_or_local_root():
+    from rag_app.config import volume_path
+
+    assert volume_path({"PAGE_IMAGE_VOLUME": "cat.silver.page_images"}) == "/Volumes/cat/silver/page_images/"
+    assert volume_path({"PAGE_IMAGE_ROOT": "/Volumes/c/s/v"}) == "/Volumes/c/s/v/"
+    with pytest.raises(ValueError):
+        volume_path({"PAGE_IMAGE_VOLUME": "bad name; DROP"})
+    with pytest.raises(ValueError):
+        volume_path({})
+
+
+def test_from_env_requires_environment_specific_values(monkeypatch):
+    from rag_app.config import Settings
+
+    for name in (
+        "VS_INDEX",
+        "CITATIONS_VIEW",
+        "DOCUMENTS_VIEW",
+        "SQL_WAREHOUSE_ID",
+        "PAGE_IMAGE_ROOT",
+        "PAGE_IMAGE_VOLUME",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(ValueError, match="VS_INDEX"):
+        Settings.from_env()
+
+
+def test_postgres_accepts_pghost_from_databricks_apps(monkeypatch):
+    monkeypatch.setenv("PGHOST", "instance.database.azuredatabricks.net")
+    s = make_settings(store_backend="postgres", lakebase_instance="")
+    assert s.store_backend == "postgres"
+    monkeypatch.delenv("PGHOST")
+    with pytest.raises(ValueError, match="LAKEBASE_INSTANCE"):
+        make_settings(store_backend="postgres", lakebase_instance="")

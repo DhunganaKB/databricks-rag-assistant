@@ -1,13 +1,13 @@
 # RAG Knowledge Assistant (Azure Databricks)
 
-A retrieval-augmented chat application over the RAG-ready data produced by the sibling **ETL** project. It runs locally today; deployment to Databricks Apps via GitHub Actions comes next.
+A retrieval-augmented chat application over the RAG-ready data produced by the sibling **ETL** project. It runs locally and deploys to Databricks Apps through GitHub Actions (staging on merge, prod on release with approval).
 
 - **Grounded answers with citations.** Every fact is cited as `[n]`.
 - **Bounding boxes in the source document.** Click a citation to see the cited passage boxed on the rendered PDF page, or highlighted in the text document. The same boxes are available as JSON and as an annotated PNG.
 - **Short-term memory.** The last **5** question/answer pairs go to the model verbatim; older turns are folded into a running summary. Follow-ups such as "And in New York?" are rewritten into standalone search queries.
 - **Long-term memory.** Facts users state about themselves (office, contract type, preferences) are remembered across conversations, are visible to the user, and can be deleted.
 - **Nothing stored locally.** Sessions, messages, summaries, memories and feedback live in **Databricks Lakebase** (`rag-memory-dev`, schema `rag_memory`, Unity Catalog catalog `rag_memory_dev`).
-- **Production practices.** Sessions are scoped per user, retries are idempotent, SQL is parameterized, the image path is guarded, requests carry IDs, and dependencies are locked. There are 42 unit/API tests (90% coverage) plus 4 Lakebase integration tests, lint and format checks, CI, an evaluation harness, and a smoke test.
+- **Production practices.** Sessions are scoped per user, retries are idempotent, SQL is parameterized, the image path is guarded, requests carry IDs, and dependencies are locked. There are 48 unit/API tests (90% coverage) plus 4 Lakebase integration tests, lint and format checks, CI, an evaluation harness, and a smoke test.
 
 ```
 Browser ─▶ FastAPI app ─┬─▶ Vector Search  gold.chunks_index      (hybrid; hits carry boxes/spans)
@@ -42,18 +42,20 @@ make smoke
 |---|---|
 | `make install` | `uv sync`: creates `.venv` from `uv.lock` |
 | `make lint` / `make format` | ruff lint + format check / auto-fix |
-| `make test` | 42 unit + API tests, no workspace needed |
+| `make test` | 48 unit + API tests, no workspace needed |
 | `make test-integration` | 4 tests of the Lakebase store in a throwaway schema |
 | `make migrate` | create/upgrade the Lakebase tables (`rag_memory`) |
 | `make run` | local server with `.env` on port 8000 |
 | `make smoke` | 20 end-to-end checks against the running app (cleans up its data) |
 | `make eval` | 25-question evaluation against the real index and models |
 | `make requirements` | regenerate `requirements.txt` (for Databricks Apps) from `uv.lock` |
+| `make validate` / `make deploy-dev` | validate the bundle / deploy your personal dev app |
 
 ## Documentation
 - [docs/BUILD_LOG.md](docs/BUILD_LOG.md): the full step-by-step record of how this repo was built and verified (commands, decisions, results, issues and fixes).
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): components, request flow, history, citation/box model, security.
 - [docs/API.md](docs/API.md): HTTP API reference.
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md): enterprise deployment to Databricks Apps via GitHub Actions (setup, environments, configuration, operations).
 
 ## Repository layout
 ```
@@ -68,8 +70,10 @@ src/rag_app/          application package
   store/              postgres.py (Lakebase) + migrations/*.sql; sqlite.py = in-memory test double
 static/               chat UI + citation viewer (vanilla JS, no build step)
 tests/                unit + API tests with fakes (no network)
-scripts/              bootstrap_env.sh, migrate.py, smoke_test.py, run_eval.py
+scripts/              bootstrap_env.sh, migrate.py, post_deploy.py, smoke_test.py, run_eval.py
 eval/eval_set.json    evaluation questions with expected facts
-app.yaml              Databricks Apps runtime config (deployment step)
-.github/workflows/    CI (lint, format, tests, lockfile check)
+app.yaml              Databricks Apps runtime config (environment-agnostic, valueFrom)
+databricks.yml        Asset Bundle: targets dev / staging / prod and their variables
+resources/app.yml     the app and its resources (permissions)
+.github/workflows/    ci.yml (tests), deploy.yml + _deploy.yml (staging / prod)
 ```

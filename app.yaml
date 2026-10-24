@@ -1,9 +1,11 @@
-# Databricks Apps runtime configuration (used when the app is deployed; not used locally).
-# `valueFrom` reads the value of a resource attached to the app (see resources/app.yml),
-# so endpoint / warehouse names follow the deployment target without code changes.
+# Databricks Apps runtime configuration. Identical in every environment:
+# environment-specific values come from the app's resources (resources/app.yml) via
+# `valueFrom`, and the database resource sets PGHOST / PGPORT / PGUSER / PGDATABASE itself.
+# Local development uses .env instead (see .env.example).
 command: ["uvicorn", "rag_app.api:app", "--app-dir", "src", "--host", "0.0.0.0", "--port", "8000"]
 
 env:
+  # --- resources (per environment, injected by Databricks Apps)
   - name: LLM_ENDPOINT
     valueFrom: llm
   - name: HELPER_LLM_ENDPOINT
@@ -11,28 +13,32 @@ env:
   - name: SQL_WAREHOUSE_ID
     valueFrom: sql-warehouse
   - name: VS_INDEX
-    value: steampunk.dev_kbdhunga_rag_gold.chunks_index
+    valueFrom: vector-index
   - name: CITATIONS_VIEW
-    value: steampunk.dev_kbdhunga_rag_gold.citation_locations
+    valueFrom: citations-view
   - name: DOCUMENTS_VIEW
-    value: steampunk.dev_kbdhunga_rag_gold.rag_documents
-  - name: PAGE_IMAGE_ROOT
-    value: /Volumes/steampunk/dev_kbdhunga_rag_silver/page_images/
+    valueFrom: documents-view
+  - name: PAGE_IMAGE_VOLUME
+    valueFrom: page-images
+
+  # --- memory store: Lakebase (connection details come from the memory-db resource)
+  - name: STORE_BACKEND
+    value: postgres
+  - name: PG_SCHEMA
+    value: rag_memory
+  - name: AUTO_MIGRATE
+    value: "false"  # schema changes are applied by the deployment pipeline, not by the app
+
+  # --- behavior (same everywhere; change here + redeploy)
   - name: HISTORY_TURNS
     value: "5"
+  - name: LONG_TERM_MEMORY
+    value: "true"
+  - name: MEMORY_EVERY_N_TURNS
+    value: "3"
   - name: NUM_RESULTS
     value: "8"
   - name: MAX_CHUNKS_PER_DOC
     value: "4"
-  # Conversation history + long-term memory live in Lakebase (nothing on the app container).
-  # The app's database resource provides PGHOST/PGUSER; the instance name is set here.
-  - name: STORE_BACKEND
-    value: postgres
-  - name: LAKEBASE_INSTANCE
-    value: rag-memory-dev
-  - name: PG_SCHEMA
-    value: rag_memory
-  - name: LONG_TERM_MEMORY
-    value: "true"
   - name: ASSISTANT_NAME
     value: Brightline Knowledge Assistant

@@ -1,0 +1,116 @@
+# Reusable deployment of one environment (called by deploy.yml).
+#
+# bundle validate -> bundle deploy -> Lakebase migrations + grants -> start app
+#   -> smoke test against the deployed app -> evaluation gate -> summary
+name: _deploy
+
+on:
+  workflow_call:
+    inputs:
+      target:
+        required: true
+        type: string
+      eval_min_correct:
+        description: Minimum answer correctness for the evaluation gate
+        type: string
+        default: "0.9"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    name: deploy ${{ inputs.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment:
+      name: ${{ inputs.target }} # approvals, branch rules and variables live on the GitHub environment
+    concurrency:
+      group: deploy-${{ inputs.target }}
+      cancel-in-progress: false # never interrupt a deployment half-way
+    env:
+      DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
+      DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
+      # Default: OIDC federation (no secret). Fallback, only if federation is not available:
+      # set variable DATABRICKS_AUTH_TYPE=oauth-m2m and secret DATABRICKS_CLIENT_SECRET.
+      DATABRICKS_AUTH_TYPE: ${{ vars.DATABRICKS_AUTH_TYPE || 'github-oidc' }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+      # Audience of the GitHub OIDC token; must equal the audience in the federation policy.
+      DATABRICKS_TOKEN_AUDIENCE: ${{ vars.DATABRICKS_HOST }}/oidc/v1/token
+      DATABRICKS_BUNDLE_ENGINE: direct
+      BUNDLE_VAR_deployer_sp: ${{ vars.DATABRICKS_CLIENT_ID }}
+      TARGET: ${{ inputs.target }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install dependencies (locked)
+        run: uv sync --locked
+
+      - name: Install Databricks CLI
+        uses: databricks/setup-cli@v0.295.0
+
+      - name: Check configuration and identity
+        run: |
+          test -n "$DATABRICKS_HOST" || { echo "::error::GitHub environment '$TARGET' has no DATABRICKS_HOST variable"; exit 1; }
+          test -n "$DATABRICKS_CLIENT_ID" || { echo "::error::GitHub environment '$TARGET' has no DATABRICKS_CLIENT_ID variable"; exit 1; }
+          databricks current-user me -o json | jq -r '"deploying as: " + (.userName // .displayName)'
+
+      - name: Validate bundle
+        run: |
+          databricks bundle validate -t "$TARGET"
+          databricks bundle validate -t "$TARGET" -o json > bundle.json
+          {
+            echo "APP_NAME=$(jq -r '.resources.apps.rag_app.name' bundle.json)"
+            echo "LAKEBASE_INSTANCE=$(jq -r '.variables.lakebase_instance.value' bundle.json)"
+            echo "LAKEBASE_DATABASE=$(jq -r '.variables.lakebase_database.value' bundle.json)"
+            echo "WAREHOUSE_ID=$(jq -r '.variables.warehouse_id.value' bundle.json)"
+            echo "GOLD_SCHEMA=$(jq -r '.variables.gold_schema.value' bundle.json)"
+            echo "PAGE_IMAGE_VOLUME=$(jq -r '.variables.page_image_volume.value' bundle.json)"
+          } >> "$GITHUB_ENV"
+
+      - name: Deploy bundle (app definition, resources, permissions)
+        run: databricks bundle deploy -t "$TARGET"
+
+      - name: Unity Catalog grants, Lakebase migrations and app grants
+        run: >-
+          uv run python scripts/post_deploy.py --app "$APP_NAME"
+          --instance "$LAKEBASE_INSTANCE" --database "$LAKEBASE_DATABASE"
+          --warehouse-id "$WAREHOUSE_ID" --gold-schema "$GOLD_SCHEMA" --page-image-volume "$PAGE_IMAGE_VOLUME"
+
+      - name: Deploy and start the app
+        run: |
+          databricks bundle run -t "$TARGET" rag_app
+          echo "APP_URL=$(databricks apps get "$APP_NAME" -o json | jq -r .url)" >> "$GITHUB_ENV"
+
+      - name: Smoke test (deployed app)
+        run: uv run python scripts/smoke_test.py --base-url "$APP_URL" --databricks-auth --wipe-memories
+
+      - name: Evaluation gate (deployed app)
+        run: uv run python scripts/run_eval.py --base-url "$APP_URL" --databricks-auth --min-correct "${{ inputs.eval_min_correct }}"
+
+      - name: Upload evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report-${{ inputs.target }}
+          path: output/eval_report.json
+          if-no-files-found: ignore
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### ${TARGET} deployment"
+            echo "- app: \`${APP_NAME:-n/a}\`"
+            echo "- url: ${APP_URL:-n/a}"
+            echo "- commit: \`${GITHUB_SHA::7}\`"
+            if [ -f output/eval_report.json ]; then
+              echo "- evaluation: \`$(jq -c .summary output/eval_report.json)\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

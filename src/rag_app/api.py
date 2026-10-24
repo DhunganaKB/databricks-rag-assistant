@@ -98,7 +98,13 @@ def create_app(
         return response
 
     def user_of(request: Request) -> str:
-        user = request.headers.get("x-forwarded-email") or request.headers.get("x-forwarded-preferred-username")
+        # Set by Databricks Apps after SSO (never trusted from the request body). Service
+        # principals (e.g. the deployment smoke test) may only carry X-Forwarded-User.
+        user = (
+            request.headers.get("x-forwarded-email")
+            or request.headers.get("x-forwarded-preferred-username")
+            or request.headers.get("x-forwarded-user")
+        )
         if user:
             return user.strip().lower()
         if state["settings"].local_user_id:

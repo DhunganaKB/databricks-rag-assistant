@@ -25,6 +25,26 @@ def _bool(name: str, default: bool) -> bool:
     return default if value in (None, "") else value.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _required(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise ValueError(f"environment variable {name} is required (see .env.example / app.yaml)")
+    return value
+
+
+def volume_path(env: dict | None = None) -> str:
+    """PAGE_IMAGE_VOLUME (catalog.schema.volume, injected by Databricks Apps) or PAGE_IMAGE_ROOT
+    (/Volumes/... path, convenient locally) -> '/Volumes/<catalog>/<schema>/<volume>/'."""
+    env = os.environ if env is None else env
+    volume = (env.get("PAGE_IMAGE_VOLUME") or "").strip()
+    if volume:
+        return "/Volumes/" + uc_name(volume, "PAGE_IMAGE_VOLUME").replace(".", "/") + "/"
+    root = (env.get("PAGE_IMAGE_ROOT") or "").strip()
+    if not root:
+        raise ValueError("set PAGE_IMAGE_VOLUME (catalog.schema.volume) or PAGE_IMAGE_ROOT (/Volumes/...)")
+    return root if root.endswith("/") else root + "/"
+
+
 def uc_name(value: str, what: str) -> str:
     if not _UC_NAME.match(value or ""):
         raise ValueError(f"{what} must be a catalog.schema.name identifier, got {value!r}")
@@ -68,8 +88,9 @@ class Settings:
             raise ValueError("history_turns must be between 0 and 20")
         if self.store_backend not in ("postgres", "memory"):
             raise ValueError("store_backend must be postgres (Lakebase) or memory (tests only)")
-        if self.store_backend == "postgres" and not self.lakebase_instance:
-            raise ValueError("LAKEBASE_INSTANCE is required when STORE_BACKEND=postgres")
+        if self.store_backend == "postgres" and not (self.lakebase_instance or os.getenv("PGHOST")):
+            # Locally: LAKEBASE_INSTANCE. In Databricks Apps: the database resource sets PGHOST.
+            raise ValueError("STORE_BACKEND=postgres needs LAKEBASE_INSTANCE (local) or PGHOST (Databricks Apps)")
         if not _PG_IDENT.match(self.pg_schema):
             raise ValueError("pg_schema must be a lowercase Postgres identifier")
         if self.memory_every_n_turns < 1 or self.summarize_batch_turns < 1:
@@ -77,13 +98,13 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> Settings:
-        root = os.getenv("PAGE_IMAGE_ROOT", "/Volumes/steampunk/dev_kbdhunga_rag_silver/page_images/")
+        # Environment-specific values have no defaults: a missing value fails fast at startup.
         return cls(
-            vs_index=os.getenv("VS_INDEX", "steampunk.dev_kbdhunga_rag_gold.chunks_index"),
-            citations_view=os.getenv("CITATIONS_VIEW", "steampunk.dev_kbdhunga_rag_gold.citation_locations"),
-            documents_view=os.getenv("DOCUMENTS_VIEW", "steampunk.dev_kbdhunga_rag_gold.rag_documents"),
-            page_image_root=root if root.endswith("/") else root + "/",
-            sql_warehouse_id=os.getenv("SQL_WAREHOUSE_ID", ""),
+            vs_index=_required("VS_INDEX"),
+            citations_view=_required("CITATIONS_VIEW"),
+            documents_view=_required("DOCUMENTS_VIEW"),
+            page_image_root=volume_path(),
+            sql_warehouse_id=_required("SQL_WAREHOUSE_ID"),
             llm_endpoint=os.getenv("LLM_ENDPOINT", "databricks-claude-sonnet-5-5"),
             helper_llm_endpoint=os.getenv("HELPER_LLM_ENDPOINT", "databricks-claude-haiku-5-5"),
             store_backend=os.getenv("STORE_BACKEND", "postgres"),

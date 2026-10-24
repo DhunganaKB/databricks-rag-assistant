@@ -1,19 +1,21 @@
-# Continuous integration: runs on every push and pull request.
-# Lint + format check + unit/API tests + "requirements.txt matches uv.lock".
+# Continuous integration: lint + format check + unit/API tests + "requirements.txt matches uv.lock".
 # No Databricks credentials are needed (all external services are faked in tests).
-# The deployment workflow (Databricks Apps via Asset Bundles) is added in the next step.
+#
+# Runs on pull requests and on pushes to branches other than main. Pushes to main run it as
+# the first job of the deploy workflow (workflow_call), so nothing deploys without passing it.
 name: ci
 
 on:
-  push:
-    branches: [main]
   pull_request:
+  push:
+    branches-ignore: [main]
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
