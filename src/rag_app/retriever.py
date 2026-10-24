@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from rag_app.models import Box, TextSpan
+from rag_app.retry import with_retry
 
 log = logging.getLogger(__name__)
 
@@ -140,8 +141,15 @@ class VectorSearchRetriever:
         self.index_name = index_name
 
     def search(self, query: str, num_results: int) -> list[Hit]:
-        resp = self.w.vector_search_indexes.query_index(
-            index_name=self.index_name, columns=COLUMNS, query_text=query, num_results=num_results, query_type="HYBRID"
+        resp = with_retry(
+            lambda: self.w.vector_search_indexes.query_index(
+                index_name=self.index_name,
+                columns=COLUMNS,
+                query_text=query,
+                num_results=num_results,
+                query_type="HYBRID",
+            ),
+            "vector search",
         )
         names = [c.name for c in resp.manifest.columns]
         rows = resp.result.data_array if resp.result and resp.result.data_array else []

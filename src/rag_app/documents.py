@@ -19,6 +19,7 @@ from collections import OrderedDict
 
 from rag_app.config import Settings
 from rag_app.models import Box, CitationDetail, PageRegions, TextSpan
+from rag_app.retry import with_retry
 
 log = logging.getLogger(__name__)
 
@@ -73,11 +74,14 @@ class DocumentService:
 
         if not self.s.sql_warehouse_id:
             raise RuntimeError("SQL_WAREHOUSE_ID is not configured")
-        resp = self.w.statement_execution.execute_statement(
-            statement=statement,
-            warehouse_id=self.s.sql_warehouse_id,
-            wait_timeout="30s",
-            parameters=[StatementParameterListItem(name=k, value=v, type="STRING") for k, v in params.items()],
+        resp = with_retry(
+            lambda: self.w.statement_execution.execute_statement(
+                statement=statement,
+                warehouse_id=self.s.sql_warehouse_id,
+                wait_timeout="30s",
+                parameters=[StatementParameterListItem(name=k, value=v, type="STRING") for k, v in params.items()],
+            ),
+            "SQL statement",
         )
         deadline = time.time() + 120
         while resp.status.state in (StatementState.PENDING, StatementState.RUNNING) and time.time() < deadline:
@@ -171,6 +175,6 @@ class DocumentService:
         if not path.startswith(self.s.page_image_root):  # defense in depth: never read outside the volume
             log.warning("refusing image path outside page_image_root: %s", path)
             return None
-        data = self.w.files.download(path).contents.read()
+        data = with_retry(lambda: self.w.files.download(path).contents.read(), "page image download")
         self._images.put(key, data)
         return data
