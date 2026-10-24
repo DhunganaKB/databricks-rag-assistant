@@ -1,5 +1,9 @@
 """Settings from environment variables (12-factor). The same code runs locally (values from
-.env), in tests (constructed directly) and in Databricks Apps (values from app.yaml)."""
+.env), in tests (constructed directly) and in Databricks Apps (values from app.yaml).
+
+Nothing is persisted on the machine running the app: conversations and memory live in
+Lakebase (Postgres) in Databricks. The `memory` backend (in-process SQLite) exists only
+for unit tests."""
 
 from __future__ import annotations
 
@@ -9,10 +13,16 @@ from dataclasses import dataclass
 
 # Fully qualified Unity Catalog names are interpolated into SQL, so they are validated.
 _UC_NAME = re.compile(r"^[A-Za-z0-9_]+\.[A-Za-z0-9_]+\.[A-Za-z0-9_]+$")
+_PG_IDENT = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 
 
 def _int(name: str, default: int) -> int:
     return int(os.getenv(name) or default)
+
+
+def _bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    return default if value in (None, "") else value.strip().lower() in ("1", "true", "yes", "on")
 
 
 def uc_name(value: str, what: str) -> str:
@@ -30,14 +40,22 @@ class Settings:
     sql_warehouse_id: str
     llm_endpoint: str = "databricks-claude-sonnet-5-5"
     helper_llm_endpoint: str = "databricks-claude-haiku-5-5"
-    history_turns: int = 5
-    store_backend: str = "sqlite"
-    sqlite_path: str = ".data/rag_app.db"
+    # conversation store
+    store_backend: str = "postgres"  # postgres (Lakebase) | memory (unit tests only)
     lakebase_instance: str = ""
-    pg_schema: str = "rag_app"
+    pg_schema: str = "rag_memory"
+    auto_migrate: bool = True  # create missing tables at startup (idempotent)
+    # short-term memory
+    history_turns: int = 5  # last N question/answer pairs sent verbatim
+    summarize_batch_turns: int = 1  # fold each turn into the running summary as it leaves the window
+    # long-term memory
+    long_term_memory: bool = True
+    memory_every_n_turns: int = 3  # extract facts about the user every N turns
+    max_memories_in_prompt: int = 10
+    # retrieval / generation
     num_results: int = 8
     max_chunks_per_doc: int = 4
-    max_answer_tokens: int = 900
+    max_answer_tokens: int = 2000
     assistant_name: str = "Knowledge Assistant"
     local_user_id: str = ""
 
@@ -48,8 +66,14 @@ class Settings:
             raise ValueError("page_image_root must be a /Volumes/... path")
         if not 0 <= self.history_turns <= 20:
             raise ValueError("history_turns must be between 0 and 20")
-        if self.store_backend not in ("sqlite", "postgres"):
-            raise ValueError("store_backend must be sqlite or postgres")
+        if self.store_backend not in ("postgres", "memory"):
+            raise ValueError("store_backend must be postgres (Lakebase) or memory (tests only)")
+        if self.store_backend == "postgres" and not self.lakebase_instance:
+            raise ValueError("LAKEBASE_INSTANCE is required when STORE_BACKEND=postgres")
+        if not _PG_IDENT.match(self.pg_schema):
+            raise ValueError("pg_schema must be a lowercase Postgres identifier")
+        if self.memory_every_n_turns < 1 or self.summarize_batch_turns < 1:
+            raise ValueError("memory_every_n_turns and summarize_batch_turns must be >= 1")
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -62,14 +86,18 @@ class Settings:
             sql_warehouse_id=os.getenv("SQL_WAREHOUSE_ID", ""),
             llm_endpoint=os.getenv("LLM_ENDPOINT", "databricks-claude-sonnet-5-5"),
             helper_llm_endpoint=os.getenv("HELPER_LLM_ENDPOINT", "databricks-claude-haiku-5-5"),
-            history_turns=_int("HISTORY_TURNS", 5),
-            store_backend=os.getenv("STORE_BACKEND", "sqlite"),
-            sqlite_path=os.getenv("SQLITE_PATH", ".data/rag_app.db"),
+            store_backend=os.getenv("STORE_BACKEND", "postgres"),
             lakebase_instance=os.getenv("LAKEBASE_INSTANCE", ""),
-            pg_schema=os.getenv("PG_SCHEMA", "rag_app"),
+            pg_schema=os.getenv("PG_SCHEMA", "rag_memory"),
+            auto_migrate=_bool("AUTO_MIGRATE", True),
+            history_turns=_int("HISTORY_TURNS", 5),
+            summarize_batch_turns=_int("SUMMARIZE_BATCH_TURNS", 1),
+            long_term_memory=_bool("LONG_TERM_MEMORY", True),
+            memory_every_n_turns=_int("MEMORY_EVERY_N_TURNS", 3),
+            max_memories_in_prompt=_int("MAX_MEMORIES_IN_PROMPT", 10),
             num_results=_int("NUM_RESULTS", 8),
             max_chunks_per_doc=_int("MAX_CHUNKS_PER_DOC", 4),
-            max_answer_tokens=_int("MAX_ANSWER_TOKENS", 900),
+            max_answer_tokens=_int("MAX_ANSWER_TOKENS", 2000),
             assistant_name=os.getenv("ASSISTANT_NAME", "Knowledge Assistant"),
             local_user_id=os.getenv("LOCAL_USER_ID", ""),
         )

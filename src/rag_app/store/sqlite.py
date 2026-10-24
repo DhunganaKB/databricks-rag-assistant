@@ -1,4 +1,8 @@
-"""SQLite conversation store for local development and tests (single process)."""
+"""In-memory SQLite store: a test double with the same behavior as PostgresStore.
+
+It never touches the file system (the database lives only in process memory), so unit
+tests and offline tools run without Lakebase while the app itself stores nothing locally.
+"""
 
 from __future__ import annotations
 
@@ -6,45 +10,31 @@ import json
 import sqlite3
 import threading
 from contextlib import contextmanager
-from pathlib import Path
 
-from rag_app.store.base import uuid7
+from rag_app.store.base import normalize_fact, uuid7
 
-SCHEMA = """
+_NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
+SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS sessions (
-  session_id     TEXT PRIMARY KEY,
-  user_id        TEXT NOT NULL,
-  title          TEXT,
-  status         TEXT NOT NULL DEFAULT 'active',
-  turn_count     INTEGER NOT NULL DEFAULT 0,
-  created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  last_active_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-);
-CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id, last_active_at);
+  session_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, title TEXT, status TEXT NOT NULL DEFAULT 'active',
+  turn_count INTEGER NOT NULL DEFAULT 0, running_summary TEXT NOT NULL DEFAULT '',
+  summary_upto_turn INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT ({_NOW}), last_active_at TEXT NOT NULL DEFAULT ({_NOW}));
 CREATE TABLE IF NOT EXISTS messages (
-  message_id        TEXT PRIMARY KEY,
-  session_id        TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-  turn_index        INTEGER NOT NULL,
-  role              TEXT NOT NULL,
-  content           TEXT NOT NULL,
-  client_message_id TEXT,
-  standalone_query  TEXT,
-  citations         TEXT,
-  request_id        TEXT,
-  latency_ms        INTEGER,
-  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  UNIQUE (session_id, turn_index, role)
-);
+  message_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+  turn_index INTEGER NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, client_message_id TEXT,
+  standalone_query TEXT, citations TEXT, request_id TEXT, latency_ms INTEGER,
+  created_at TEXT NOT NULL DEFAULT ({_NOW}), UNIQUE (session_id, turn_index, role));
 CREATE UNIQUE INDEX IF NOT EXISTS messages_client_id ON messages(session_id, client_message_id)
   WHERE client_message_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS user_memories (
+  memory_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, memory_type TEXT NOT NULL, content TEXT NOT NULL,
+  normalized TEXT NOT NULL, source_session_id TEXT, status TEXT NOT NULL DEFAULT 'active',
+  created_at TEXT NOT NULL DEFAULT ({_NOW}), updated_at TEXT NOT NULL DEFAULT ({_NOW}), last_used_at TEXT);
+CREATE UNIQUE INDEX IF NOT EXISTS user_memories_dedup ON user_memories(user_id, normalized) WHERE status = 'active';
 CREATE TABLE IF NOT EXISTS feedback (
-  feedback_id TEXT PRIMARY KEY,
-  user_id     TEXT NOT NULL,
-  request_id  TEXT NOT NULL,
-  rating      INTEGER NOT NULL,
-  comment     TEXT,
-  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-);
+  feedback_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, request_id TEXT NOT NULL, rating INTEGER NOT NULL,
+  comment TEXT, created_at TEXT NOT NULL DEFAULT ({_NOW}));
 """
 
 
@@ -55,10 +45,8 @@ def _message(row: sqlite3.Row) -> dict:
 
 
 class SQLiteStore:
-    def __init__(self, path: str = ".data/rag_app.db"):
-        if path != ":memory:":
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
+    def __init__(self):
+        self._conn = sqlite3.connect(":memory:", check_same_thread=False, isolation_level=None)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._lock = threading.RLock()
@@ -78,11 +66,12 @@ class SQLiteStore:
         with self._lock:
             return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
 
-    def ensure_schema(self) -> None:
+    def ensure_schema(self) -> list[str]:
         with self._lock:
             self._conn.executescript(SCHEMA)
+        return ["001_initial"]
 
-    # sessions ---------------------------------------------------------------
+    # sessions ---------------------------------------------------------------------
     def create_session(self, user_id: str) -> dict:
         sid = uuid7()
         with self._tx() as c:
@@ -115,17 +104,22 @@ class SQLiteStore:
                 "UPDATE sessions SET title = ? WHERE session_id = ? AND user_id = ?", (title, session_id, user_id)
             )
 
-    # messages ---------------------------------------------------------------
-    def recent_turns(self, session_id: str, user_id: str, turns: int) -> list[dict]:
-        if turns <= 0:
-            return []
-        rows = self._q(
+    def update_summary(self, session_id: str, user_id: str, summary: str, upto_turn: int) -> None:
+        with self._tx() as c:
+            c.execute(
+                "UPDATE sessions SET running_summary = ?, summary_upto_turn = ? "
+                "WHERE session_id = ? AND user_id = ? AND summary_upto_turn < ?",
+                (summary, upto_turn, session_id, user_id, upto_turn),
+            )
+
+    # messages ---------------------------------------------------------------------
+    def turns_between(self, session_id: str, user_id: str, after_turn: int, upto_turn: int | None = None) -> list[dict]:
+        return self._q(
             "SELECT m.turn_index, m.role, m.content FROM messages m JOIN sessions s USING (session_id) "
-            "WHERE m.session_id = ? AND s.user_id = ? AND m.turn_index > s.turn_count - ? "
+            "WHERE m.session_id = ? AND s.user_id = ? AND m.turn_index > ? AND (? IS NULL OR m.turn_index <= ?) "
             "ORDER BY m.turn_index, CASE m.role WHEN 'user' THEN 0 ELSE 1 END",
-            (session_id, user_id, turns),
+            (session_id, user_id, after_turn, upto_turn, upto_turn),
         )
-        return rows
 
     def messages(self, session_id: str, user_id: str) -> list[dict]:
         with self._lock:
@@ -172,17 +166,50 @@ class SQLiteStore:
                 (uuid7(), session_id, turn, question, client_message_id),
             )
             c.execute(
-                "INSERT INTO messages (message_id, session_id, turn_index, role, content, standalone_query, "
-                "citations, request_id, latency_ms) VALUES (?, ?, ?, 'assistant', ?, ?, ?, ?, ?)",
+                "INSERT INTO messages (message_id, session_id, turn_index, role, content, standalone_query, citations, "
+                "request_id, latency_ms) VALUES (?, ?, ?, 'assistant', ?, ?, ?, ?, ?)",
                 (uuid7(), session_id, turn, answer, standalone_query, json.dumps(citations), request_id, latency_ms),
             )
             c.execute(
-                "UPDATE sessions SET turn_count = ?, last_active_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') "
-                "WHERE session_id = ?",
-                (turn, session_id),
+                f"UPDATE sessions SET turn_count = ?, last_active_at = {_NOW} WHERE session_id = ?", (turn, session_id)
             )
             return turn
 
+    # long-term memory ------------------------------------------------------------------
+    def list_memories(self, user_id: str, limit: int = 50) -> list[dict]:
+        return self._q(
+            "SELECT memory_id, memory_type, content, created_at, updated_at, last_used_at FROM user_memories "
+            "WHERE user_id = ? AND status = 'active' ORDER BY updated_at DESC, rowid DESC LIMIT ?",
+            (user_id, limit),
+        )
+
+    def add_memories(self, user_id: str, items: list[dict], session_id: str | None) -> int:
+        added = 0
+        with self._tx() as c:
+            for item in items:
+                added += c.execute(
+                    "INSERT OR IGNORE INTO user_memories (memory_id, user_id, memory_type, content, normalized, "
+                    "source_session_id) VALUES (?, ?, ?, ?, ?, ?)",
+                    (uuid7(), user_id, item["type"], item["content"], normalize_fact(item["content"]), session_id),
+                ).rowcount
+        return added
+
+    def delete_memory(self, user_id: str, memory_id: str | None = None) -> int:
+        with self._tx() as c:  # hard delete, like PostgresStore
+            return c.execute(
+                "DELETE FROM user_memories WHERE user_id = ? AND (? IS NULL OR memory_id = ?)",
+                (user_id, memory_id, memory_id),
+            ).rowcount
+
+    def touch_memories(self, user_id: str, memory_ids: list[str]) -> None:
+        with self._tx() as c:
+            for mid in memory_ids:
+                c.execute(
+                    f"UPDATE user_memories SET last_used_at = {_NOW} WHERE user_id = ? AND memory_id = ?",
+                    (user_id, mid),
+                )
+
+    # feedback ---------------------------------------------------------------------------
     def add_feedback(self, user_id: str, request_id: str, rating: int, comment: str | None) -> None:
         with self._tx() as c:
             c.execute(

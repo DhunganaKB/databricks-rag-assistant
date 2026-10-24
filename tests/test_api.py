@@ -16,7 +16,7 @@ BOB = {"x-forwarded-email": "bob@example.com"}
 @pytest.fixture
 def client():
     settings = make_settings(local_user_id="")
-    store = SQLiteStore(":memory:")
+    store = SQLiteStore()
     store.ensure_schema()
     agent = RagAgent(settings, store, FakeRetriever(), FakeLLM())
     with TestClient(create_app(settings, agent, FakeDocuments())) as c:
@@ -98,3 +98,20 @@ def test_feedback(client):
         "/api/feedback", json={"request_id": rid, "rating": -1, "comment": "wrong"}, headers=ALICE
     ).json() == {"ok": True}
     assert client.post("/api/feedback", json={"request_id": rid, "rating": 5}, headers=ALICE).status_code == 422
+
+
+def test_long_term_memory_endpoints(client):
+    sid = None
+    for q in ("I'm a contractor in the Rotterdam office.", "Do I get vacation?", "Please use bullet points."):
+        sid = client.post("/api/chat", json={"message": q, "session_id": sid}, headers=ALICE).json()["session_id"]
+    mems = client.get("/api/memories", headers=ALICE).json()  # extracted by the background task after turn 3
+    assert sorted(m["content"] for m in mems) == [
+        "User is a contractor in the Rotterdam office.",
+        "User prefers bullet points.",
+    ]
+    assert client.get("/api/memories", headers=BOB).json() == []
+    assert client.delete(f"/api/memories/{mems[0]['memory_id']}", headers=BOB).status_code == 404
+    assert client.delete(f"/api/memories/{mems[0]['memory_id']}", headers=ALICE).json() == {"deleted": 1}
+    assert client.delete("/api/memories", headers=ALICE).json() == {"deleted": 1}
+    r = client.post("/api/chat", json={"message": "hi"}, headers=ALICE).json()
+    assert r["memories_used"] == 0

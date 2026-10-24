@@ -9,6 +9,10 @@ from typing import Protocol
 log = logging.getLogger(__name__)
 
 
+class TruncatedOutput(RuntimeError):
+    """The model stopped at max_tokens (finish_reason=length): the text is incomplete."""
+
+
 class ChatModel(Protocol):
     def complete(
         self,
@@ -17,6 +21,7 @@ class ChatModel(Protocol):
         max_tokens: int = 800,
         temperature: float | None = 0.1,
         endpoint: str | None = None,
+        require_complete: bool = False,
     ) -> str: ...
 
 
@@ -49,9 +54,14 @@ def _openai_client(workspace_client):
 
 
 class DatabricksLLM:
-    """Some endpoints (e.g. newer Claude models) reject sampling parameters such as
-    `temperature`. The first rejection is remembered per endpoint and the call is retried
-    without it, so the same code works with any Foundation Model endpoint."""
+    """Works with any Foundation Model endpoint:
+
+    - Some endpoints (e.g. newer Claude models) reject `temperature`. The first rejection is
+      remembered per endpoint and the call is retried without it.
+    - Some models return a `reasoning` part before the text, and reasoning tokens count
+      against max_tokens. Only text parts are returned; if the model still stops at
+      max_tokens, `require_complete=True` raises TruncatedOutput instead of returning a
+      cut-off text (used for data that gets stored, such as summaries and memories)."""
 
     def __init__(self, workspace_client, default_endpoint: str, timeout_s: float = 60.0):
         self._client = _openai_client(workspace_client)
@@ -67,6 +77,7 @@ class DatabricksLLM:
         max_tokens: int = 800,
         temperature: float | None = 0.1,
         endpoint: str | None = None,
+        require_complete: bool = False,
     ) -> str:
         from openai import BadRequestError
 
@@ -84,7 +95,13 @@ class DatabricksLLM:
             log.info("endpoint %s does not accept temperature; retrying without it", model)
             kwargs.pop("temperature")
             resp = self._client.chat.completions.create(**kwargs)
-        content = resp.choices[0].message.content
-        if isinstance(content, list):  # some models return typed content parts
+        choice = resp.choices[0]
+        content = choice.message.content
+        if isinstance(content, list):  # typed content parts, e.g. [reasoning, text]
             content = "".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text")
-        return (content or "").strip()
+        text = (content or "").strip()
+        if choice.finish_reason == "length":
+            if require_complete:
+                raise TruncatedOutput(f"{model} stopped at max_tokens={max_tokens}")
+            log.warning("%s stopped at max_tokens=%s; answer may be incomplete", model, max_tokens)
+        return text

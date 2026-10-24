@@ -35,15 +35,24 @@ def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--base-url", default="http://localhost:8000")
     p.add_argument("--token", help="Bearer token for a deployed Databricks App")
-    p.add_argument("--user", default="smoke.tester@example.com", help="local runs only: X-Forwarded-Email")
+    p.add_argument(
+        "--user",
+        default=f"smoke.{uuid.uuid4().hex[:8]}@example.com",
+        help="local runs only: X-Forwarded-Email (a fresh user per run keeps memories independent)",
+    )
+    p.add_argument("--keep", action="store_true", help="keep the smoke-test sessions and memories in Lakebase")
     args = p.parse_args()
     headers = {"Authorization": f"Bearer {args.token}"} if args.token else {"x-forwarded-email": args.user}
     c = httpx.Client(base_url=args.base_url, headers=headers, timeout=180)
 
     health = c.get("/api/health").json()
     check(
-        "health", health.get("status") == "ok", f"llm={health.get('llm')} history_turns={health.get('history_turns')}"
+        "health",
+        health.get("status") == "ok",
+        f"llm={health.get('llm')} history_turns={health.get('history_turns')} store={health.get('store')}"
+        f" schema={health.get('memory_schema')}",
     )
+    check("history is stored in Databricks (Lakebase)", health.get("store") == "postgres")
 
     # --- multi-turn conversation -------------------------------------------------
     turns = [
@@ -132,6 +141,37 @@ def main() -> int:
             "span points at the cited text", bool(body_line) and body_line[:40] in cited, f"{body_line[:50]!r} in span"
         )
 
+    # --- short-term memory: rolling summary of turns older than the 5-turn window ---
+    time.sleep(6)  # summarization runs in the background after each answer
+    r8 = c.post("/api/chat", json={"message": "Summarize what we discussed about revenue.", "session_id": sid}).json()
+    check(
+        "turn 8 uses summary + last 5 turns",
+        r8["summary_used"] and r8["history_turns_used"] == 5,
+        f"summary_used={r8['summary_used']} history={r8['history_turns_used']}",
+    )
+
+    # --- long-term memory: facts from one session are used in a NEW session ----------
+    msid = None
+    for q in (
+        "I'm a contractor working in the Rotterdam office.",
+        "Which travel booking tool should I use?",
+        "Please keep answers short, in bullet points.",
+    ):
+        msid = c.post("/api/chat", json={"message": q, "session_id": msid}).json()["session_id"]
+    time.sleep(8)  # extraction runs in the background after the 3rd turn
+    mems = [m["content"] for m in c.get("/api/memories").json()]
+    check(
+        "long-term memory extracted",
+        any("contractor" in m.lower() or "rotterdam" in m.lower() for m in mems),
+        str(mems),
+    )
+    fresh = c.post("/api/chat", json={"message": "Am I eligible for paid time off?"}).json()
+    check(
+        "new session uses long-term memory",
+        fresh["memories_used"] > 0 and "contractor" in fresh["answer"].lower(),
+        f"memories_used={fresh['memories_used']} | {fresh['answer'][:120]}",
+    )
+
     # --- idempotency, privacy, no-answer -------------------------------------------
     cid = f"smoke-{uuid.uuid4()}"
     a = c.post("/api/chat", json={"message": "What is the SEV2 response time?", "client_message_id": cid}).json()
@@ -151,6 +191,14 @@ def main() -> int:
         na["citations"] == [] and ("could not find" in na["answer"].lower() or "not" in na["answer"].lower()),
         na["answer"][:120],
     )
+
+    if not args.keep:  # leave no test data behind in Lakebase
+        created = {sid, msid, a["session_id"], na["session_id"], fresh["session_id"]}
+        for session_id in created:
+            c.delete(f"/api/sessions/{session_id}")
+        if not args.token:  # only the throwaway local test user: never wipe a real user's memories
+            c.delete("/api/memories")
+        print(f"cleaned up {len(created)} smoke-test sessions" + ("" if args.token else " and memories"))
 
     failed = [n for n, ok, _ in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} checks passed" + (f"; FAILED: {failed}" if failed else ""))

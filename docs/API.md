@@ -29,6 +29,7 @@ Response:
     { "n": 2, "doc_format": "text", "pages": [], "boxes": [],
       "span": { "char_start": 421, "char_end": 1285, "line_start": 11, "line_end": 29 }, "…": "…" }
   ],
+  "summary_used": false, "memories_used": 2,
   "replayed": false, "latency_ms": 3412
 }
 ```
@@ -44,6 +45,17 @@ Response:
 | DELETE | `/api/sessions/{session_id}` | deletes the session and its messages |
 | POST | `/api/feedback` | `{"request_id": "…", "rating": 1 or -1, "comment": "…"}` |
 
+## Long-term memory
+Facts the user stated about themselves (office, role, contract type, answer preferences), extracted every few turns and used across sessions. Stored in Lakebase (`rag_memory.user_memories`).
+
+| Method | Path | Result |
+|---|---|---|
+| GET | `/api/memories` | caller's active memories, newest first |
+| DELETE | `/api/memories/{memory_id}` | permanently deletes one memory (404 if not the caller's) |
+| DELETE | `/api/memories` | permanently deletes all of the caller's memories |
+
+`POST /api/chat` responses also report `summary_used` (older turns came from the rolling summary) and `memories_used` (number of long-term facts in the prompt).
+
 ## Citation viewer
 | Method | Path | Result |
 |---|---|---|
@@ -55,7 +67,7 @@ Response:
 ## Operations
 | Method | Path | Result |
 |---|---|---|
-| GET | `/api/health` | status, version, index, model, history window, store backend |
+| GET | `/api/health` | status, version, index, model, history window, store backend, memory schema |
 | GET | `/api/me` | caller identity, assistant name, history window |
 
 Errors: `400` invalid input or id, `401` no identity, `404` not found or not yours, `422` validation (e.g. empty or too long message), `500` with `request_id` for correlation in the logs.

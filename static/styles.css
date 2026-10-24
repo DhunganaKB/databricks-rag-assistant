@@ -79,6 +79,14 @@ button { font: inherit; color: inherit; }
   border: 2.5px solid var(--hl); border-radius: 4px; }
 .spinner { color: var(--muted); font-size: 13px; }
 
+dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--text); width: min(520px, calc(100% - 32px)); }
+dialog::backdrop { background: rgba(0, 0, 0, .35); }
+dialog h3 { margin: 0 0 6px; }
+.mem-list { list-style: none; padding: 0; margin: 12px 0; display: flex; flex-direction: column; gap: 6px; }
+.mem-list li { display: flex; gap: 8px; align-items: center; justify-content: space-between; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+.dialog-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.sidebar-foot .btn { margin-top: 8px; font-size: 12.5px; }
+
 .only-mobile { display: none; }
 @media (max-width: 900px) {
   .app { grid-template-columns: minmax(0, 1fr); }

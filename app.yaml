@@ -24,13 +24,15 @@ env:
     value: "8"
   - name: MAX_CHUNKS_PER_DOC
     value: "4"
-  # Conversation history store. SQLite inside an app container is lost on restart, so the
-  # deployed app should use Lakebase (Postgres). Switched on in the deployment step:
+  # Conversation history + long-term memory live in Lakebase (nothing on the app container).
+  # The app's database resource provides PGHOST/PGUSER; the instance name is set here.
   - name: STORE_BACKEND
-    value: sqlite
-  # - name: STORE_BACKEND
-  #   value: postgres
-  # - name: LAKEBASE_INSTANCE
-  #   value: rag-memory-dev
+    value: postgres
+  - name: LAKEBASE_INSTANCE
+    value: rag-memory-dev
+  - name: PG_SCHEMA
+    value: rag_memory
+  - name: LONG_TERM_MEMORY
+    value: "true"
   - name: ASSISTANT_NAME
     value: Brightline Knowledge Assistant

@@ -56,6 +56,8 @@ class ChatResponse(BaseModel):
     citations: list[Citation]
     standalone_query: str
     history_turns_used: int
+    summary_used: bool = False
+    memories_used: int = 0
     replayed: bool = False
     latency_ms: int | None = None
 

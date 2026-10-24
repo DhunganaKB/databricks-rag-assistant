@@ -190,19 +190,102 @@ git commit -m "..."
 
 ---
 
+# Part 2: Memory moved to Databricks (2026-10-24)
+
+**Requirement:** nothing stored locally, even when running locally. Short-term and long-term memory must live in Databricks.
+
+## Step 14: Create the Databricks storage (done by you)
+
+```bash
+scripts/dbx.sh database create-database-instance rag-memory-dev --capacity CU_1      # Lakebase (managed Postgres)
+scripts/dbx.sh database create-database-catalog rag_memory_dev rag-memory-dev databricks_postgres   # register in Unity Catalog
+```
+Verified: instance `rag-memory-dev` is **AVAILABLE** (CU_1, host `ep-dawn-sound-e88ir4y5.database.centralus.azuredatabricks.net`), and Unity Catalog shows catalog `rag_memory_dev` (type `MANAGED_ONLINE_CATALOG`).
+
+**Why Lakebase, not Delta tables:** every chat turn does several small reads and transactional writes. Postgres does this in milliseconds with row locks; Delta through a SQL warehouse would add 0.5–3 s per call and create many small files. Lakebase is still Databricks-managed, governed in Unity Catalog, and can be synced to Delta for analytics.
+
+## Step 15: Code changes
+
+| Area | Change |
+|---|---|
+| `config.py` | `STORE_BACKEND` is now `postgres` (default) or `memory` (tests only). The file-based SQLite option is **removed**. `LAKEBASE_INSTANCE` is required; new settings `LONG_TERM_MEMORY`, `MEMORY_EVERY_N_TURNS`, `MAX_MEMORIES_IN_PROMPT`, `SUMMARIZE_BATCH_TURNS`, `AUTO_MIGRATE` |
+| `store/migrations/001_initial.sql` | Versioned DDL: `sessions` (with `running_summary`), `messages`, `user_memories`, `feedback`. Applied in order and recorded in `schema_migrations` |
+| `store/postgres.py` | Migration runner; summary updates that only move forward; memories de-duplicated with `ON CONFLICT`; `touch_memories`; hard delete |
+| `store/sqlite.py` | In-memory only (its constructor no longer accepts a path), so it can never write a file |
+| `agent.py` | Short-term memory = running summary + last 5 turns. Long-term memory = user facts in the system prompt. Background `maintain()`: title, summary roll-up, memory extraction (each step isolated) |
+| `prompts.py` | Summary and memory-extraction prompts; rule that documents outrank remembered facts |
+| `api.py` | Background `maintain` after every answer; `GET/DELETE /api/memories`; health shows store and schema |
+| UI | "What do you remember about me?" dialog with Forget / Forget everything; answers show summary/memory usage |
+| `scripts/migrate.py` | `make migrate`: apply migrations and print tables with row counts |
+| `.env`, `.env.example`, `app.yaml` | `STORE_BACKEND=postgres`, `LAKEBASE_INSTANCE=rag-memory-dev`, `PG_SCHEMA=rag_memory` |
+
+Then deleted the old local file: `rm -rf .data`.
+
+## Step 16: Create the tables in Lakebase
+
+```bash
+make migrate
+```
+```
+instance=rag-memory-dev schema=rag_memory applied now: ['001_initial']
+  rag_memory.feedback / messages / schema_migrations / sessions / user_memories
+```
+Running it again prints `nothing (up to date)` (idempotent).
+
+## Step 17: Tests
+
+- Unit tests (`make test`): **42 passed**, 90% coverage. New tests cover the rolling summary (turns 1–2 reach the model only through the summary), long-term memory (extraction, password filtered out, used in a *new* session, invisible to other users), de-duplication, forget, disabling memory, and maintenance steps failing independently.
+- **Issue 10: two assertions passed for the wrong reason.** They checked for "Known facts about the user", which is always present in the system prompt rules. Fixed to check for the actual memory block and fact text.
+- Integration tests against Lakebase (`make test-integration`): **4 passed** in a throwaway schema `rag_memory_it_test` that is created and dropped by the test. They cover turns and isolation, JSONB citations with boxes, summary only moving forward, `ON CONFLICT` de-duplication, and cascade delete.
+
+## Step 18: Run locally against Lakebase, smoke test
+
+```bash
+make run          # log: "connecting to Lakebase instance=rag-memory-dev ... user=kbdhunga@mtu.edu"
+make smoke
+```
+The smoke test now uses a fresh test user per run, checks summary and memory, and **deletes only the sessions it created**. When pointed at a deployed app with a real user's token, it never wipes that user's memories.
+
+**Issue 11: the rolling summary was sometimes empty or cut off** (first run 19/20: "turn 8 uses summary" failed). Investigation:
+- Background maintenance had run (`summarized_upto` 1 → 2 before turn 8), but a replay showed a stored summary of only 124 characters, cut mid-word.
+- Calling the helper model directly showed that `databricks-claude-haiku-5-5` sometimes returns a **reasoning part before the text**, and **reasoning tokens count against `max_tokens`**. With a 300-token budget, 3 of 4 calls ended with `finish_reason=length`.
+
+Fixes:
+- larger budgets: summary 1500, extraction 1200, rewrite 400, title 200, answers 2000
+- `DatabricksLLM.complete(require_complete=True)` raises `TruncatedOutput` instead of returning cut-off text, so background steps never store a truncated summary or memory list
+- answers that hit the limit are logged
+- unit tests for both cases
+
+**Issue 12: "forget" kept the data.** After the smoke test, `user_memories` still had 4 rows: deletes were soft (`status='deleted'`). Changed to a **hard DELETE** in both stores (personal data must really be removed) and purged the 4 leftover rows.
+
+**Issue 13: the eval script crashed silently.** It still called `SQLiteStore(":memory:")`. Fixed. Lesson: scripts are not covered by unit tests; a type checker in CI would catch signature changes like this (candidate for the deployment step).
+
+**Final results**
+| Check | Result |
+|---|---|
+| `make test` | 42 passed, 90% coverage |
+| `make test-integration` (Lakebase) | 4 passed |
+| `make smoke` | **20/20**: history 0→5 capped, summary used at turn 8, memories extracted and used in a new session ("contractors are not eligible…"), boxes and spans, idempotency, privacy, no-answer |
+| `make eval` | **25/25** correct, retrieval hit 100%, every citation located |
+| Lakebase after the tests | `sessions` 0, `messages` 0, `user_memories` 0 (tests clean up after themselves) |
+
+---
+
 ## How to reproduce from scratch
 ```bash
 git clone <repo> && cd RAG
 make install
 scripts/bootstrap_env.sh        # or: cp .env.example .env and set DATABRICKS_TOKEN
 make check                      # lint + tests (no workspace needed)
+make migrate                    # create the Lakebase tables (rag_memory)
+make test-integration           # 4 Lakebase store tests
 make run                        # terminal 1
-make smoke                      # terminal 2: 16/16 expected
+make smoke                      # terminal 2: 20/20 expected
 make eval                       # 25/25 expected on the sample corpus
 ```
 
 ## Open items for the deployment step
-1. Create a Lakebase instance; switch `STORE_BACKEND=postgres`; add Postgres integration tests.
+1. ~~Create a Lakebase instance; switch `STORE_BACKEND=postgres`; add Postgres integration tests.~~ Done (Part 2). Remaining: ownership/grants on `rag_memory` for the app's service principal.
 2. Add a Databricks Asset Bundle (`databricks.yml` + `resources/app.yml`) declaring the app's resources: serving endpoints (CAN_QUERY), SQL warehouse (CAN_USE), index (SELECT), page-image volume (READ VOLUME), gold views (SELECT), Lakebase (CAN_CONNECT_AND_CREATE).
 3. Add a GitHub Actions deploy workflow: service principal auth via OIDC (no long-lived token), `bundle validate` → `bundle deploy` → `bundle run` → smoke test against the deployed URL → eval gate.
 4. Promote dev → prod with separate targets and catalogs.

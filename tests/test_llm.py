@@ -7,8 +7,9 @@ from rag_app.llm import DatabricksLLM
 
 
 class _Completions:
-    def __init__(self, reject_temperature: bool):
+    def __init__(self, reject_temperature: bool, finish_reason: str = "stop"):
         self.reject = reject_temperature
+        self.finish_reason = finish_reason
         self.calls: list[dict] = []
 
     def create(self, **kwargs):
@@ -21,12 +22,12 @@ class _Completions:
                 body=None,
             )
         msg = SimpleNamespace(content=[{"type": "reasoning", "text": "hmm"}, {"type": "text", "text": " OK "}])
-        return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+        return SimpleNamespace(choices=[SimpleNamespace(message=msg, finish_reason=self.finish_reason)])
 
 
-def _llm(reject: bool) -> tuple[DatabricksLLM, _Completions]:
+def _llm(reject: bool, finish_reason: str = "stop") -> tuple[DatabricksLLM, _Completions]:
     llm = DatabricksLLM.__new__(DatabricksLLM)
-    completions = _Completions(reject)
+    completions = _Completions(reject, finish_reason)
     llm._client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
     llm.default_endpoint, llm.timeout_s = "m", 5
     llm._no_temperature = set()
@@ -49,3 +50,15 @@ def test_temperature_sent_when_supported():
     llm, calls = _llm(reject=False)
     llm.complete([{"role": "user", "content": "hi"}], temperature=0.0)
     assert calls.calls[0]["temperature"] == 0.0
+
+
+def test_truncated_output_rejected_when_completeness_required():
+    """Reasoning tokens count against max_tokens; a cut-off summary must never be stored."""
+    import pytest
+
+    from rag_app.llm import TruncatedOutput
+
+    llm, _ = _llm(reject=False, finish_reason="length")
+    with pytest.raises(TruncatedOutput):
+        llm.complete([{"role": "user", "content": "summarize"}], require_complete=True)
+    assert llm.complete([{"role": "user", "content": "answer"}]) == "OK"  # answers: returned, logged as warning

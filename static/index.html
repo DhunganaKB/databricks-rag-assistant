@@ -14,7 +14,10 @@
       <button class="btn primary" id="newChat" type="button">+ New chat</button>
     </div>
     <nav class="sessions" id="sessions"></nav>
-    <div class="sidebar-foot"><span id="who"></span><span id="historyInfo"></span></div>
+    <div class="sidebar-foot">
+      <span id="who"></span><span id="historyInfo"></span>
+      <button class="btn" id="memBtn" type="button">What do you remember about me?</button>
+    </div>
   </aside>
 
   <main class="chat" aria-label="Chat">
@@ -51,6 +54,15 @@
     <div class="viewer-body" id="viewerBody"></div>
   </aside>
 </div>
+<dialog id="memDialog" aria-labelledby="memTitle">
+  <h3 id="memTitle">Remembered about you</h3>
+  <p class="viewer-note">Stored in Databricks (Lakebase) and used to personalize answers across conversations. Company documents always take precedence.</p>
+  <ul id="memList" class="mem-list"></ul>
+  <div class="dialog-actions">
+    <button class="btn" id="forgetAll" type="button">Forget everything</button>
+    <button class="btn primary" id="closeMem" type="button">Close</button>
+  </div>
+</dialog>
 <script src="/static/app.js"></script>
 </body>
 </html>

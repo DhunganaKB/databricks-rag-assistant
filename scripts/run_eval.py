@@ -55,7 +55,7 @@ class RecordingAgent(RagAgent):
 def judge(llm, endpoint: str, question: str, facts: list[str], answer: str) -> tuple[bool, str]:
     raw = llm.complete(
         [{"role": "user", "content": JUDGE.format(question=question, facts="; ".join(facts), answer=answer)}],
-        max_tokens=400,
+        max_tokens=1000,
         temperature=0.0,
         endpoint=endpoint,
     )
@@ -84,7 +84,7 @@ def main() -> int:
 
     settings = Settings.from_env()
     w = WorkspaceClient()
-    store = SQLiteStore(":memory:")
+    store = SQLiteStore()  # in-memory: evaluation never writes to Lakebase or disk
     store.ensure_schema()
     llm = DatabricksLLM(w, settings.llm_endpoint)
     agent = RecordingAgent(settings, store, VectorSearchRetriever(w, settings.vs_index), llm)

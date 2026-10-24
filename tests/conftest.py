@@ -22,7 +22,7 @@ def make_settings(**overrides) -> Settings:
         page_image_root="/Volumes/cat/silver/page_images/",
         sql_warehouse_id="wh",
         history_turns=5,
-        sqlite_path=":memory:",
+        store_backend="memory",
         local_user_id="alice@example.com",
     )
     base.update(overrides)
@@ -68,15 +68,24 @@ class FakeLLM:
 
     def __init__(self, answer="Revenue was 48.6 million USD [1]. Employees get 22 days [2]."):
         self.answer = answer
+        self.memory_reply = (
+            '[{"type": "profile", "content": "User is a contractor in the Rotterdam office."},'
+            ' {"type": "profile", "content": "User password is hunter2."},'
+            ' {"type": "preference", "content": "User prefers bullet points."}]'
+        )
         self.calls: list[tuple[str | None, list[dict]]] = []
 
-    def complete(self, messages, *, max_tokens=800, temperature=0.1, endpoint=None):
+    def complete(self, messages, *, max_tokens=800, temperature=0.1, endpoint=None, require_complete=False):
         self.calls.append((endpoint, messages))
         last = messages[-1]["content"]
         if "Standalone query:" in last:
             return "standalone: " + last.rsplit("Latest message:", 1)[1].split("\n")[0].strip()
         if "3 to 6 word title" in last:
             return "Revenue And Vacation"
+        if "Updated summary:" in last:
+            return "SUMMARY: " + str(last.count("user:")) + " user messages folded"
+        if "Extract durable facts" in last:
+            return self.memory_reply
         return self.answer
 
     def answer_calls(self):
@@ -136,7 +145,7 @@ def settings():
 
 @pytest.fixture
 def store():
-    s = SQLiteStore(":memory:")
+    s = SQLiteStore()
     s.ensure_schema()
     return s
 

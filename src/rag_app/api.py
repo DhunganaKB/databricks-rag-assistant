@@ -105,11 +105,13 @@ def create_app(
             return state["settings"].local_user_id
         raise HTTPException(401, "no authenticated user")
 
-    def title_task(user: str, session_id: str, message: str) -> None:
+    def maintain_task(user: str, session_id: str) -> None:
+        """Title, rolling summary, long-term memory extraction. Failures are logged, never raised."""
         try:
-            state["agent"].set_title(user, session_id, message)
+            done = state["agent"].maintain(user, session_id)
+            log.info("maintenance session=%s %s", session_id, done)
         except Exception:
-            log.exception("title generation failed for session %s", session_id)
+            log.exception("background maintenance failed for session %s", session_id)
 
     # -- pages ------------------------------------------------------------------
     @app.get("/", include_in_schema=False)
@@ -126,6 +128,8 @@ def create_app(
             "llm": s.llm_endpoint,
             "history_turns": s.history_turns,
             "store": s.store_backend,
+            "memory_schema": s.pg_schema if s.store_backend == "postgres" else None,
+            "long_term_memory": s.long_term_memory,
         }
 
     @app.get("/api/me")
@@ -134,6 +138,7 @@ def create_app(
             "user_id": user_of(request),
             "assistant_name": state["settings"].assistant_name,
             "history_turns": state["settings"].history_turns,
+            "long_term_memory": state["settings"].long_term_memory,
         }
 
     # -- chat -------------------------------------------------------------------
@@ -148,8 +153,8 @@ def create_app(
             raise HTTPException(404, "session not found") from None
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
-        if result.turn_index == 1 and not result.replayed:
-            background.add_task(title_task, user, result.session_id, body.message)
+        if not result.replayed:
+            background.add_task(maintain_task, user, result.session_id)
         return result
 
     @app.get("/api/sessions")
@@ -175,6 +180,22 @@ def create_app(
     def feedback(body: FeedbackRequest, request: Request):
         state["agent"].store.add_feedback(user_of(request), body.request_id, body.rating, body.comment)
         return {"ok": True}
+
+    # -- long-term memory (user-visible and user-deletable) ---------------------------------
+    @app.get("/api/memories")
+    def memories(request: Request):
+        return state["agent"].store.list_memories(user_of(request))
+
+    @app.delete("/api/memories/{memory_id}")
+    def forget_one(memory_id: str, request: Request):
+        deleted = state["agent"].store.delete_memory(user_of(request), _check_id(memory_id, "memory_id"))
+        if not deleted:
+            raise HTTPException(404, "memory not found")
+        return {"deleted": deleted}
+
+    @app.delete("/api/memories")
+    def forget_all(request: Request):
+        return {"deleted": state["agent"].store.delete_memory(user_of(request), None)}
 
     # -- citations & documents ----------------------------------------------------
     @app.get("/api/citations/{chunk_id}", response_model=CitationDetail)

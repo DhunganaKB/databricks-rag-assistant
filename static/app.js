@@ -78,6 +78,8 @@ function addMessage(role, text, extra = {}) {
   if (role === "assistant" && extra.request_id) {
     const meta = el("div", "meta-line");
     if (extra.history_turns_used !== undefined) meta.appendChild(el("span", "", `history: ${extra.history_turns_used} turn(s)`));
+    if (extra.summary_used) meta.appendChild(el("span", "", "+ summary of earlier turns"));
+    if (extra.memories_used) meta.appendChild(el("span", "", `memories: ${extra.memories_used}`));
     if (extra.standalone_query) meta.appendChild(el("span", "", `searched: “${extra.standalone_query}”`));
     for (const [label, rating] of [["👍", 1], ["👎", -1]]) {
       const b = el("button", "", label);
@@ -247,6 +249,33 @@ async function send(text) {
 $("composer").onsubmit = (e) => { e.preventDefault(); const t = $("input").value.trim(); $("input").value = ""; send(t); };
 $("input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("composer").requestSubmit(); } });
 bindSuggestions(document);
+
+// ---------------------------------------------------------------- long-term memory
+async function showMemories() {
+  const list = $("memList");
+  list.replaceChildren(el("li", "spinner", "Loading…"));
+  $("memDialog").showModal();
+  const mems = await api("/api/memories");
+  list.replaceChildren();
+  if (!mems.length) list.appendChild(el("li", "", "Nothing yet. Facts you share about yourself (office, role, preferences) appear here."));
+  for (const m of mems) {
+    const li = el("li");
+    li.appendChild(el("span", "", m.content));
+    const b = el("button", "btn", "Forget");
+    b.type = "button";
+    b.onclick = async () => { await api(`/api/memories/${m.memory_id}`, { method: "DELETE" }); showMemories(); };
+    li.appendChild(b);
+    list.appendChild(li);
+  }
+}
+$("memBtn").onclick = showMemories;
+$("closeMem").onclick = () => $("memDialog").close();
+$("forgetAll").onclick = async () => {
+  if (confirm("Delete everything the assistant remembers about you?")) {
+    await api("/api/memories", { method: "DELETE" });
+    showMemories();
+  }
+};
 $("newChat").onclick = newChat;
 $("menuBtn").onclick = () => $("sidebar").classList.toggle("open");
 

@@ -1,5 +1,5 @@
 # Common developer commands. Everything runs through uv (locked dependencies).
-.PHONY: install lint format test test-integration run smoke eval requirements check
+.PHONY: install lint format test test-integration migrate run smoke eval requirements check
 
 install:            ## create .venv with app + dev dependencies from uv.lock
 	uv sync
@@ -15,8 +15,11 @@ format:             ## auto-format
 test:               ## unit + API tests (no workspace needed)
 	uv run pytest --cov --cov-report=term-missing
 
-test-integration:   ## live tests against the workspace (needs .env)
-	RAG_INTEGRATION=1 uv run pytest -m integration
+test-integration:   ## PostgresStore against Lakebase in a throwaway schema (needs .env)
+	RAG_INTEGRATION=1 uv run --env-file .env pytest -m integration
+
+migrate:            ## create/upgrade the Lakebase tables (schema PG_SCHEMA, default rag_memory)
+	uv run --env-file .env python scripts/migrate.py
 
 run:                ## run the app locally on http://localhost:8000 (loads .env)
 	uv run --env-file .env uvicorn rag_app.api:app --app-dir src --reload --port 8000
