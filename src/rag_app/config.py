@@ -32,17 +32,24 @@ def _required(name: str) -> str:
     return value
 
 
+_VOLUME_PATH = re.compile(r"^/Volumes/[A-Za-z0-9_]+/[A-Za-z0-9_]+/[A-Za-z0-9_]+/?$")
+
+
 def volume_path(env: dict | None = None) -> str:
-    """PAGE_IMAGE_VOLUME (catalog.schema.volume, injected by Databricks Apps) or PAGE_IMAGE_ROOT
-    (/Volumes/... path, convenient locally) -> '/Volumes/<catalog>/<schema>/<volume>/'."""
+    """Page-image volume -> '/Volumes/<catalog>/<schema>/<volume>/'.
+
+    PAGE_IMAGE_VOLUME accepts both forms: the path that Databricks Apps injects for a volume
+    resource (`valueFrom`, e.g. /Volumes/cat/schema/vol) or the name cat.schema.vol.
+    PAGE_IMAGE_ROOT (a /Volumes/... path) is the local-development alternative."""
     env = os.environ if env is None else env
-    volume = (env.get("PAGE_IMAGE_VOLUME") or "").strip()
-    if volume:
-        return "/Volumes/" + uc_name(volume, "PAGE_IMAGE_VOLUME").replace(".", "/") + "/"
-    root = (env.get("PAGE_IMAGE_ROOT") or "").strip()
-    if not root:
-        raise ValueError("set PAGE_IMAGE_VOLUME (catalog.schema.volume) or PAGE_IMAGE_ROOT (/Volumes/...)")
-    return root if root.endswith("/") else root + "/"
+    value = (env.get("PAGE_IMAGE_VOLUME") or env.get("PAGE_IMAGE_ROOT") or "").strip()
+    if not value:
+        raise ValueError("set PAGE_IMAGE_VOLUME (/Volumes/... path or catalog.schema.volume)")
+    if value.startswith("/Volumes/"):
+        if not _VOLUME_PATH.match(value):
+            raise ValueError(f"page-image volume must be /Volumes/<catalog>/<schema>/<volume>, got {value!r}")
+        return value.rstrip("/") + "/"
+    return "/Volumes/" + uc_name(value, "PAGE_IMAGE_VOLUME").replace(".", "/") + "/"
 
 
 def uc_name(value: str, what: str) -> str:

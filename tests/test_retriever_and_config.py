@@ -61,13 +61,18 @@ def test_settings_validate_identifiers():
         make_settings(history_turns=50)
 
 
-def test_volume_path_from_apps_binding_or_local_root():
+def test_volume_path_accepts_apps_path_name_and_local_root():
     from rag_app.config import volume_path
 
+    # what Databricks Apps actually injects for a volume resource (valueFrom)
+    assert volume_path({"PAGE_IMAGE_VOLUME": "/Volumes/steampunk/dev_rag_silver/page_images"}) == (
+        "/Volumes/steampunk/dev_rag_silver/page_images/"
+    )
     assert volume_path({"PAGE_IMAGE_VOLUME": "cat.silver.page_images"}) == "/Volumes/cat/silver/page_images/"
-    assert volume_path({"PAGE_IMAGE_ROOT": "/Volumes/c/s/v"}) == "/Volumes/c/s/v/"
-    with pytest.raises(ValueError):
-        volume_path({"PAGE_IMAGE_VOLUME": "bad name; DROP"})
+    assert volume_path({"PAGE_IMAGE_ROOT": "/Volumes/c/s/v/"}) == "/Volumes/c/s/v/"
+    for bad in ("bad name; DROP", "/Volumes/c/s", "/Volumes/c/s/v/../../etc", "/etc/passwd"):
+        with pytest.raises(ValueError):
+            volume_path({"PAGE_IMAGE_VOLUME": bad})
     with pytest.raises(ValueError):
         volume_path({})
 
