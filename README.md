@@ -1,6 +1,6 @@
 # RAG Knowledge Assistant (Azure Databricks)
 
-A retrieval-augmented chat application over the RAG-ready data produced by the sibling **ETL** project. It runs locally and deploys to Databricks Apps through GitHub Actions (staging on merge, prod on release with approval).
+A retrieval-augmented chat application over the RAG-ready data produced by the sibling **ETL** project. It runs locally and deploys to Databricks Apps (`rag-assistant-dev`) through GitHub Actions on every push to `main`.
 
 - **Grounded answers with citations.** Every fact is cited as `[n]`.
 - **Bounding boxes in the source document.** Click a citation to see the cited passage boxed on the rendered PDF page, or highlighted in the text document. The same boxes are available as JSON and as an annotated PNG.
@@ -49,13 +49,12 @@ make smoke
 | `make smoke` | 20 end-to-end checks against the running app (cleans up its data) |
 | `make eval` | 25-question evaluation against the real index and models |
 | `make requirements` | regenerate `requirements.txt` (for Databricks Apps) from `uv.lock` |
-| `make validate` / `make deploy-dev` | validate the bundle / deploy your personal dev app |
 
 ## Documentation
 - [docs/BUILD_LOG.md](docs/BUILD_LOG.md): the full step-by-step record of how this repo was built and verified (commands, decisions, results, issues and fixes).
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): components, request flow, history, citation/box model, security.
 - [docs/API.md](docs/API.md): HTTP API reference.
-- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md): enterprise deployment to Databricks Apps via GitHub Actions (setup, environments, configuration, operations).
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md): deploy to Databricks Apps via GitHub Actions, step by step (service principal, permissions, GitHub environment).
 
 ## Repository layout
 ```
@@ -73,7 +72,7 @@ tests/                unit + API tests with fakes (no network)
 scripts/              bootstrap_env.sh, migrate.py, post_deploy.py, smoke_test.py, run_eval.py
 eval/eval_set.json    evaluation questions with expected facts
 app.yaml              Databricks Apps runtime config (environment-agnostic, valueFrom)
-databricks.yml        Asset Bundle: targets dev / staging / prod and their variables
+databricks.yml        Asset Bundle: target dev (the current workspace) and its variables
 resources/app.yml     the app and its resources (permissions)
-.github/workflows/    ci.yml (tests), deploy.yml + _deploy.yml (staging / prod)
+.github/workflows/    ci.yml (tests), deploy.yml + _deploy.yml (deploy on push to main)
 ```

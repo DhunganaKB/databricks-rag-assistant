@@ -1,49 +1,30 @@
-# Continuous delivery to Databricks Apps.
+# Deploys the app to Databricks (environment "dev" = the current workspace).
 #
-#   push to main         -> ci -> deploy staging (automatic)
-#   release published    -> ci -> deploy prod    (waits for approval: GitHub environment "prod")
-#   manual (Run workflow) -> ci -> deploy the chosen target
+#   push to main            -> tests -> deploy
+#   Actions -> Run workflow -> tests -> deploy (manual)
 #
-# Authentication: GitHub OIDC -> Databricks workload identity federation. No Databricks
-# secret is stored in GitHub. Per-environment settings are GitHub *environment variables*
-# (Settings -> Environments -> staging / prod), see docs/DEPLOYMENT.md:
-#   DATABRICKS_HOST       workspace URL
-#   DATABRICKS_CLIENT_ID  application ID of that environment's deployment service principal
+# Credentials come from the GitHub environment "dev" (Settings -> Environments -> dev):
+#   variable DATABRICKS_HOST          workspace URL
+#   variable DATABRICKS_CLIENT_ID     Application ID of the service principal sp-rag-deployer
+#   secret   DATABRICKS_CLIENT_SECRET OAuth secret of that service principal
 name: deploy
 
 on:
   push:
     branches: [main]
-  release:
-    types: [published]
   workflow_dispatch:
-    inputs:
-      target:
-        description: Environment to deploy
-        type: choice
-        options: [staging, prod]
-        default: staging
 
 permissions:
   contents: read
-  id-token: write # GitHub OIDC token for Databricks workload identity federation
+  id-token: write # only used if you later switch to secret-less OIDC sign-in
 
 jobs:
   ci:
     uses: ./.github/workflows/ci.yml
 
-  staging:
+  deploy:
     needs: ci
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.target == 'staging')
     uses: ./.github/workflows/_deploy.yml
     with:
-      target: staging
-    secrets: inherit
-
-  prod:
-    needs: ci
-    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.target == 'prod')
-    uses: ./.github/workflows/_deploy.yml
-    with:
-      target: prod
+      target: dev
     secrets: inherit

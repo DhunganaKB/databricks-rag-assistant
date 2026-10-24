@@ -1,4 +1,4 @@
-# Reusable deployment of one environment (called by deploy.yml).
+# Deployment steps (called by deploy.yml).
 #
 # bundle validate -> bundle deploy -> Lakebase migrations + grants -> start app
 #   -> smoke test against the deployed app -> evaluation gate -> summary
@@ -30,13 +30,13 @@ jobs:
       group: deploy-${{ inputs.target }}
       cancel-in-progress: false # never interrupt a deployment half-way
     env:
+      # Sign in as the deployment service principal (values from the GitHub environment).
       DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
       DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
-      # Default: OIDC federation (no secret). Fallback, only if federation is not available:
-      # set variable DATABRICKS_AUTH_TYPE=oauth-m2m and secret DATABRICKS_CLIENT_SECRET.
-      DATABRICKS_AUTH_TYPE: ${{ vars.DATABRICKS_AUTH_TYPE || 'github-oidc' }}
       DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
-      # Audience of the GitHub OIDC token; must equal the audience in the federation policy.
+      # oauth-m2m = client ID + secret. (Optional later: set variable DATABRICKS_AUTH_TYPE=github-oidc
+      # and a federation policy instead of the secret; see docs/DEPLOYMENT.md, "Optional".)
+      DATABRICKS_AUTH_TYPE: ${{ vars.DATABRICKS_AUTH_TYPE || 'oauth-m2m' }}
       DATABRICKS_TOKEN_AUDIENCE: ${{ vars.DATABRICKS_HOST }}/oidc/v1/token
       DATABRICKS_BUNDLE_ENGINE: direct
       BUNDLE_VAR_deployer_sp: ${{ vars.DATABRICKS_CLIENT_ID }}
@@ -59,6 +59,9 @@ jobs:
         run: |
           test -n "$DATABRICKS_HOST" || { echo "::error::GitHub environment '$TARGET' has no DATABRICKS_HOST variable"; exit 1; }
           test -n "$DATABRICKS_CLIENT_ID" || { echo "::error::GitHub environment '$TARGET' has no DATABRICKS_CLIENT_ID variable"; exit 1; }
+          if [ "$DATABRICKS_AUTH_TYPE" = "oauth-m2m" ] && [ -z "$DATABRICKS_CLIENT_SECRET" ]; then
+            echo "::error::GitHub environment '$TARGET' has no DATABRICKS_CLIENT_SECRET secret"; exit 1
+          fi
           databricks current-user me -o json | jq -r '"deploying as: " + (.userName // .displayName)'
 
       - name: Validate bundle

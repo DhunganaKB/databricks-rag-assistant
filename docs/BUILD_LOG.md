@@ -319,6 +319,20 @@ Per-environment isolation: staging uses database `rag_staging` and prod uses its
 
 ---
 
+# Part 4: Simplified to one environment (2026-10-24)
+
+**Change of scope:** deploy only to the current workspace; no staging or prod for now.
+
+- `databricks.yml`: a single target `dev` (the current workspace) with all values as variable defaults. It's deployed only by GitHub Actions as the deployment service principal, into that principal's private folder. Personal laptop deployments (`make deploy-dev`, `make validate`) were removed; local work is `make run`.
+- Lakebase: the deployed app uses database `rag_app` in `rag-memory-dev` (local runs keep `databricks_postgres`). It's created once with `post_deploy.py --bootstrap-for <deployer>`.
+- `deploy.yml`: push to `main` (or manual run) → ci → deploy `dev`. No release/approval jobs.
+- Pipeline sign-in: **service principal client ID + OAuth secret** stored in the GitHub environment `dev` (simple and universal). Secret-less OIDC federation remains an optional upgrade (`DATABRICKS_AUTH_TYPE=github-oidc`).
+- `docs/DEPLOYMENT.md` rewritten as 8 steps for this one environment: what to create in the Databricks UI, the terminal, the GitHub UI, and what GitHub Actions does.
+
+Verified: `bundle validate -t dev` OK (app `rag-assistant-dev`, instance `rag-memory-dev`, database `rag_app`), `actionlint` clean, 48 tests pass.
+
+---
+
 ## How to reproduce from scratch
 ```bash
 git clone <repo> && cd RAG

@@ -85,5 +85,5 @@ Nothing is persisted on the machine running the app. Conversations and memory li
 ## 7. Configuration
 All settings are environment variables; see [.env.example](../.env.example). The defaults are tuned by evaluation (`NUM_RESULTS=8`, `MAX_CHUNKS_PER_DOC=4`, `HISTORY_TURNS=5`).
 
-## 8. Deployment (next step)
-`app.yaml` is ready for Databricks Apps and already points at Lakebase. Still to add: a Databricks Asset Bundle with the app's resources (serving endpoints, SQL warehouse, index SELECT, page-image volume READ, gold views SELECT, Lakebase database), table ownership/grants for the app's service principal on `rag_memory`, and a GitHub Actions deploy workflow authenticated with a service principal (OIDC workload identity federation, no long-lived PAT).
+## 8. Deployment
+Deployed as the Databricks App `rag-assistant-dev` by GitHub Actions on every push to `main`, signed in as the deployment service principal `sp-rag-deployer`. The app runs as its own, automatically created service principal with the access declared in `resources/app.yml`. Step-by-step setup: [DEPLOYMENT.md](DEPLOYMENT.md).

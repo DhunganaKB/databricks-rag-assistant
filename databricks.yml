@@ -1,23 +1,10 @@
 # Databricks Asset Bundle: deploys the RAG app as a Databricks App.
 #
-# Environments (targets)
-#   dev      personal sandbox, deployed from a laptop (mode: development, your identity)
-#   staging  shared, deployed by GitHub Actions on every push to main (service principal)
-#   prod     shared, deployed by GitHub Actions on a release, after manual approval (service principal)
+# One environment: target `dev` = your current Azure Databricks workspace.
+# It is deployed by GitHub Actions (.github/workflows/deploy.yml), signed in as the
+# deployment service principal. See docs/DEPLOYMENT.md.
 #
-# Rules
-#   * No secrets in this file. Auth comes from the environment: a CLI profile locally,
-#     GitHub OIDC (workload identity federation) in CI.
-#   * Every value that differs per environment is a variable; targets override defaults.
-#   * Variables can also be set per run: --var="name=value" or BUNDLE_VAR_<name>=value.
-#   * staging/prod deploy into the deployment service principal's own workspace folder
-#     (/Workspace/Users/<deployer>/.bundle/...). Never /Workspace/Shared,
-#     which every workspace user could modify.
-#
-# Commands (see docs/DEPLOYMENT.md)
-#   databricks bundle validate -t staging
-#   databricks bundle deploy   -t staging
-#   databricks bundle run      -t staging rag_app
+# No secrets in this file: the pipeline's credentials come from the GitHub environment `dev`.
 bundle:
   name: rag-assistant
 
@@ -25,93 +12,44 @@ include:
   - resources/*.yml
 
 variables:
-  # --- deployment identity (staging/prod)
   deployer_sp:
     description: >-
-      Application (client) ID of the deployment service principal for this environment.
-      Set by CI (BUNDLE_VAR_deployer_sp = DATABRICKS_CLIENT_ID). Pins the deployment folder
-      to that identity's private workspace folder, so only the pipeline can deploy
-      staging/prod. (Apps do not use run_as: the app always runs as its own service
-      principal, and the bundle is owned by the deploying identity.)
+      Application ID of the deployment service principal. Set automatically by the
+      pipeline (BUNDLE_VAR_deployer_sp = DATABRICKS_CLIENT_ID).
     default: ""
-
-  # --- app identity and access
   app_name:
     description: Databricks App name (lowercase, hyphens, max 30 characters).
+    default: rag-assistant-dev
   app_users_group:
-    description: Workspace group allowed to use the app (CAN_USE).
+    description: Workspace group allowed to use the app.
     default: users
-  app_admins_group:
-    description: Workspace group allowed to manage the app (CAN_MANAGE).
-    default: admins
-
-  # --- data produced by the ETL project (gold contract)
   gold_schema:
-    description: catalog.schema holding chunks_index, citation_locations and rag_documents.
+    description: catalog.schema with chunks_index, citation_locations and rag_documents (from the ETL project).
+    default: steampunk.dev_kbdhunga_rag_gold
   page_image_volume:
-    description: catalog.schema.volume holding the rendered page images.
-
-  # --- models
+    description: catalog.schema.volume with the rendered page images (from the ETL project).
+    default: steampunk.dev_kbdhunga_rag_silver.page_images
   llm_endpoint:
-    description: Serving endpoint that writes the answers.
     default: databricks-claude-sonnet-5-5
   helper_llm_endpoint:
-    description: Serving endpoint for query rewrite, titles, summaries and memory extraction.
     default: databricks-claude-haiku-5-5
-
-  # --- SQL warehouse used by the citation viewer (looked up by name -> id)
   warehouse_id:
-    description: SQL warehouse for the citation viewer.
+    description: SQL warehouse for the citation viewer (looked up by name).
     lookup:
       warehouse: Serverless Starter Warehouse
-
-  # --- conversation history and memory (Lakebase)
   lakebase_instance:
-    description: Lakebase instance holding sessions, messages, memories and feedback.
+    description: Lakebase instance for conversation history and memory.
+    default: rag-memory-dev
   lakebase_database:
-    description: Postgres database of this environment inside the Lakebase instance.
-    default: databricks_postgres
+    description: Postgres database used by the deployed app (created once, see docs/DEPLOYMENT.md step 5).
+    default: rag_app
 
 targets:
   dev:
-    mode: development  # names get your user prefix, deploys as you, resources paused by default
     default: true
+    mode: production  # deployed by the pipeline identity, no name prefixes
     workspace:
       host: https://adb-7405616448132971.11.azuredatabricks.net
-    variables:
-      app_name: rag-assistant-dev
-      gold_schema: steampunk.dev_kbdhunga_rag_gold
-      page_image_volume: steampunk.dev_kbdhunga_rag_silver.page_images
-      lakebase_instance: rag-memory-dev
-
-  staging:
-    mode: production
-    workspace:
-      host: https://adb-7405616448132971.11.azuredatabricks.net
+      # The deployment lives in the service principal's private folder, so only the
+      # pipeline can change it (never /Workspace/Shared, which every user could edit).
       root_path: /Workspace/Users/${var.deployer_sp}/.bundle/${bundle.name}/${bundle.target}
-    variables:
-      app_name: rag-assistant-staging
-      # Until the ETL project has a staging target, staging reads the ETL dev gold layer.
-      gold_schema: steampunk.dev_kbdhunga_rag_gold
-      page_image_volume: steampunk.dev_kbdhunga_rag_silver.page_images
-      lakebase_instance: rag-memory-dev
-      lakebase_database: rag_staging  # own database: isolated from local dev data
-    permissions:
-      - group_name: ${var.app_admins_group}
-        level: CAN_MANAGE
-
-  prod:
-    mode: production
-    workspace:
-      host: https://adb-7405616448132971.11.azuredatabricks.net
-      root_path: /Workspace/Users/${var.deployer_sp}/.bundle/${bundle.name}/${bundle.target}
-    variables:
-      app_name: rag-assistant
-      # Requires the ETL project deployed with its prod target (schemas without the dev prefix).
-      gold_schema: steampunk.rag_gold
-      page_image_volume: steampunk.rag_silver.page_images
-      lakebase_instance: rag-memory-prod  # separate instance: full isolation for production data
-      lakebase_database: rag_prod
-    permissions:
-      - group_name: ${var.app_admins_group}
-        level: CAN_MANAGE
