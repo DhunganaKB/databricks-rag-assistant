@@ -15,6 +15,7 @@ Exit code 0 = all checks passed. Writes the annotated page to output/smoke_annot
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import time
 import uuid
@@ -24,6 +25,9 @@ import httpx
 
 OUT = Path(__file__).resolve().parent.parent / "output"
 results: list[tuple[str, bool, str]] = []
+# The model words a refusal differently each time ("could not find", "couldn't find",
+# "is not in the knowledge base", "no information about ..."); any of these counts.
+DECLINE_RE = re.compile(r"\b(could\s*n[o’']t|can\s*n?[o’']t|cannot|unable|not|no (information|policy|mention))\b", re.I)
 
 
 def check(name: str, ok: bool, detail: str = "") -> bool:
@@ -209,7 +213,7 @@ def main() -> int:
     na = c.post("/api/chat", json={"message": "What is the policy on bringing dogs to the office?"}).json()
     check(
         "no-answer declines without citations",
-        na["citations"] == [] and ("could not find" in na["answer"].lower() or "not" in na["answer"].lower()),
+        na["citations"] == [] and bool(DECLINE_RE.search(na["answer"])),
         na["answer"][:120],
     )
 
