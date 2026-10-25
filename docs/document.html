@@ -627,10 +627,10 @@ GRANT USE SCHEMA, READ VOLUME, MANAGE ON SCHEMA steampunk.dev_kbdhunga_rag_silve
    short_term        MEMORY          40 ms   last 5 turns + running summary
    long_term         MEMORY          63 ms   facts about the user
    condense          CHAIN        1,001 ms   "And how…Q2?" → standalone search query
-     Completions     CHAT_MODEL   1,000 ms   Claude Haiku · 288 tokens
+     databricks-claude-haiku-5-5    CHAT_MODEL   1,000 ms   288 tokens
    retrieve          RETRIEVER      394 ms   8 passages: chunk id, document, score, text
    generate          CHAIN        4,189 ms
-     Completions     CHAT_MODEL   4,187 ms   Claude Sonnet · 1,319 in / 511 out tokens
+     databricks-claude-sonnet-5-5   CHAT_MODEL   4,187 ms   1,319 in / 511 out tokens
    save_turn                        215 ms   Lakebase write (stores the trace id)
  assessments: user_feedback = 👎  by local.developer@…  "live tracing check"</code></pre>
   <p>From this one trace you can see that the answer model took 70% of the time, which passages were used, and that the user disliked the answer. The background work after each answer (title, summary, memory extraction) is recorded as a separate <code>maintain</code> trace for the same session.</p>
@@ -638,7 +638,7 @@ GRANT USE SCHEMA, READ VOLUME, MANAGE ON SCHEMA steampunk.dev_kbdhunga_rag_silve
     <thead><tr><th>Recorded</th><th>Where it comes from</th></tr></thead>
     <tbody>
       <tr><td>Steps and their timing</td><td><code>@mlflow.trace</code> on the agent's steps (<code>src/rag_app/agent.py</code>)</td></tr>
-      <tr><td>Prompts, answers, token counts per model call</td><td><code>mlflow.openai.autolog()</code>: every call to the Claude endpoints becomes a <code>Completions</code> span automatically</td></tr>
+      <tr><td>Prompts, answers, token counts per model call</td><td>every call to a Claude endpoint is a <code>CHAT_MODEL</code> span named after the endpoint, with token usage (<code>src/rag_app/llm.py</code>)</td></tr>
       <tr><td>Retrieved passages</td><td>a <code>RETRIEVER</code> span; MLflow displays its outputs as a document list</td></tr>
       <tr><td>Who, which chat, which request</td><td>trace tags: <code>user</code>, <code>session</code>, <code>client_request_id</code> = our <code>request_id</code></td></tr>
       <tr><td>Errors</td><td>a failing step marks its span and the trace as <em>error</em>, with the exception</td></tr>
@@ -662,7 +662,7 @@ GRANT USE SCHEMA, READ VOLUME, MANAGE ON SCHEMA steampunk.dev_kbdhunga_rag_silve
       <tr><td>Permission for the app</td><td><code>resources/app.yml</code> → app resource <code>traces</code></td><td>Gives the app's service principal <em>Can edit</em> on the experiment, so it can write traces</td></tr>
       <tr><td>Configuration</td><td><code>app.yaml</code></td><td><code>MLFLOW_EXPERIMENT_ID</code> from the <code>traces</code> resource; <code>MLFLOW_TRACKING_URI=databricks</code></td></tr>
       <tr><td>Code</td><td><code>src/rag_app/tracing.py</code></td><td>Turns tracing on at startup when an experiment is configured; tags traces; sends feedback</td></tr>
-      <tr><td>Package</td><td><code>pyproject.toml</code></td><td><code>mlflow-tracing</code>: the lightweight tracing-only part of MLflow (6 extra packages here, instead of over a hundred for full MLflow)</td></tr>
+      <tr><td>Package</td><td><code>pyproject.toml</code></td><td><code>mlflow-skinny</code>: the MLflow variant that Databricks Apps already preinstalls, without the heavy ML libraries. Not <code>mlflow-tracing</code>: it clashes with the preinstalled package (see <a href="#troubleshooting">troubleshooting</a>)</td></tr>
       <tr><td>Check</td><td><code>scripts/smoke_test.py</code></td><td>Every deployment fails if the live app reports tracing as off</td></tr>
     </tbody>
   </table></div>
@@ -673,7 +673,7 @@ GRANT USE SCHEMA, READ VOLUME, MANAGE ON SCHEMA steampunk.dev_kbdhunga_rag_silve
     <li><strong>Open the experiment</strong>Left menu → <em>Experiments</em> (under AI/ML) → <code>rag-assistant-dev-traces</code> → <em>Traces</em> tab. It is in the deployer's folder, so you may need to clear an "owned by me" filter.</li>
     <li><strong>Find a trace</strong>Filter or search by user, session, request ID (the <code>request_id</code> in <code>rag_app_memory.rag_memory.messages</code>), time, status or execution time.</li>
     <li><strong>Open it</strong>The left side shows the span tree with a timeline; click a span to see its inputs, outputs and attributes. The <em>Assessments</em> panel shows user feedback.</li>
-    <li><strong>Common questions</strong><em>Why was this answer wrong?</em> Open the 👎 trace and check the <code>retrieve</code> span: was the right passage retrieved? <em>Why was it slow?</em> Compare span durations. <em>What does an answer cost?</em> Read the token counts on the <code>Completions</code> spans.</li>
+    <li><strong>Common questions</strong><em>Why was this answer wrong?</em> Open the 👎 trace and check the <code>retrieve</code> span: was the right passage retrieved? <em>Why was it slow?</em> Compare span durations. <em>What does an answer cost?</em> Read the token counts on the <code>CHAT_MODEL</code> spans.</li>
   </ol>
   <div class="callout warn"><strong>Privacy:</strong> traces contain users' questions, answers and email addresses, like the <code>rag_app_memory</code> tables. Only the deployer, workspace admins and the app can open the experiment. To give a reviewer access, add a permission for them on the experiment in <code>resources/app.yml</code> rather than in the UI, so the next deployment doesn't undo it.</div>
 
@@ -737,6 +737,7 @@ make eval                    # 25-question evaluation</code></pre>
       <tr><td>App crashed: <code>PAGE_IMAGE_VOLUME must be …</code></td><td>Apps inject a volume as a <code>/Volumes/…</code> path</td><td>Fixed in code: both forms accepted</td></tr>
       <tr><td><code>Invalid update mask … securable_kind</code></td><td>Bug in older Databricks CLI versions on app updates</td><td>Fixed by pinning CLI 1.22.1 in the workflow</td></tr>
       <tr><td>500 with <code>InternalError: Something went wrong</code></td><td>Temporary Databricks service error</td><td>Fixed: transient errors are retried automatically</td></tr>
+      <tr><td>App crashed: <code>cannot import name 'EvaluationDataset' from 'mlflow.entities'</code></td><td><code>mlflow-tracing</code> was installed on top of the <code>mlflow-skinny</code> that Databricks Apps preinstalls; both write the same <code>mlflow</code> package</td><td>Fixed: the app depends on <code>mlflow-skinny</code> only, pinned to the same version</td></tr>
       <tr><td>App not listed in Databricks Apps</td><td>List filtered by Creator = you</td><td>Clear the filter</td></tr>
       <tr><td><code>has no DATABRICKS_… variable/secret</code></td><td>Values set on the repository instead of the <code>dev</code> environment</td><td>Add them under Settings → Environments → dev</td></tr>
       <tr><td><code>Folder Users is protected</code></td><td>Someone tried to deploy as a person</td><td>Deploy only through GitHub Actions</td></tr>

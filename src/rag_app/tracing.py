@@ -2,9 +2,9 @@
 
     chat                       (AGENT)      user, session, request_id
      ├─ short_term / long_term (MEMORY)
-     ├─ condense               (CHAIN)  ─ Completions (CHAT_MODEL: prompt, answer, tokens)
+     ├─ condense               (CHAIN)  ─ <endpoint> (CHAT_MODEL: prompt, answer, tokens; see llm.py)
      ├─ retrieve               (RETRIEVER)  passages with doc, chunk id and score
-     ├─ generate               (CHAIN)  ─ Completions (CHAT_MODEL)
+     ├─ generate               (CHAIN)  ─ <endpoint> (CHAT_MODEL)
      └─ save_turn
     maintain                   (TASK)       background: title, summary, memory extraction
 
@@ -12,6 +12,12 @@ Enabled when MLFLOW_EXPERIMENT_ID is set (in Databricks Apps: the `traces` exper
 resource). Otherwise tracing is switched off and the decorators cost nothing, which is
 what unit tests rely on. Traces are exported in the background (async logging), so they
 never slow down an answer, and a tracing failure never fails a request.
+
+Package: `mlflow-skinny`, the MLflow variant that Databricks Apps preinstalls. Do NOT add
+`mlflow-tracing` next to it: both install into the same `mlflow` package, and an older
+preinstalled skinny plus a newer mlflow-tracing breaks `import mlflow` (the app crashed on
+startup). Model calls are traced in llm.py rather than with mlflow.openai.autolog(), which
+in mlflow-skinny needs numpy and pandas.
 
 User feedback (thumbs up/down) is attached to the trace of the answer it rates, so the
 MLflow UI can filter "all answers users disliked" and show what was retrieved for them.
@@ -22,17 +28,18 @@ from __future__ import annotations
 import logging
 import os
 import time
-import warnings
 
 import mlflow
 from mlflow.entities import AssessmentSource, SpanType
+from mlflow.tracing.constant import SpanAttributeKey
 
 log = logging.getLogger(__name__)
 
-__all__ = ["SpanType", "current_trace_id", "enabled", "log_user_feedback", "setup", "tag_trace", "trace"]
+__all__ = ["CHAT_USAGE", "SpanType", "current_trace_id", "enabled", "log_user_feedback", "setup", "tag_trace", "trace"]
 
 trace = mlflow.trace
 start_span = mlflow.start_span
+CHAT_USAGE = SpanAttributeKey.CHAT_USAGE  # token usage attribute shown in the MLflow UI
 
 # Off until setup() is called with an experiment: no exporter, no network calls.
 mlflow.tracing.disable()
@@ -53,9 +60,6 @@ def setup(experiment_id: str) -> bool:
     os.environ.setdefault("MLFLOW_ENABLE_ASYNC_TRACE_LOGGING", "true")
     mlflow.set_tracking_uri("databricks")
     mlflow.set_experiment(experiment_id=experiment_id)
-    mlflow.openai.autolog()  # every model call becomes a child span with prompt, answer and tokens
-    # Claude returns [reasoning, text] content parts; recording them makes pydantic warn on every call
-    warnings.filterwarnings("ignore", message="Pydantic serializer warnings", category=UserWarning)
     mlflow.tracing.enable()
     _enabled = True
     log.info("MLflow tracing enabled: experiment %s", experiment_id)

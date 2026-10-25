@@ -62,3 +62,19 @@ def test_truncated_output_rejected_when_completeness_required():
     with pytest.raises(TruncatedOutput):
         llm.complete([{"role": "user", "content": "summarize"}], require_complete=True)
     assert llm.complete([{"role": "user", "content": "answer"}]) == "OK"  # answers: returned, logged as warning
+
+
+def test_token_usage_is_reported_for_the_trace_span():
+    llm, completions = _llm(reject=False)
+    original = completions.create
+
+    def with_usage(**kwargs):
+        resp = original(**kwargs)
+        resp.usage = SimpleNamespace(prompt_tokens=120, completion_tokens=30, total_tokens=150)
+        return resp
+
+    completions.create = with_usage
+    text, usage = llm._complete("m", [{"role": "user", "content": "hi"}], 100, 0.1, False)
+    assert text == "OK" and usage == {"input_tokens": 120, "output_tokens": 30, "total_tokens": 150}
+    completions.create = original  # endpoints that report no usage
+    assert llm._complete("m", [], 100, 0.1, False) == ("OK", None)

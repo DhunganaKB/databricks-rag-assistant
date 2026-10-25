@@ -18,7 +18,7 @@ The **ETL** project (`../ETL`) turns documents into the gold layer this app read
 | `retriever.py` | Vector Search `HYBRID` query, `hit_from_row` (string/NULL tolerant), `diversify` (max N chunks per document) |
 | `llm.py` | OpenAI client on `<host>/serving-endpoints` with Databricks auth per request; adapts to endpoints that reject `temperature` |
 | `documents.py` | citation details via the SQL Statement API with **named parameters**; page images via the Files API, **only** under `PAGE_IMAGE_ROOT`; LRU caches; `annotate_page` (Pillow) |
-| `tracing.py` | MLflow Tracing: on when `MLFLOW_EXPERIMENT_ID` is set; one trace per question (spans per step, model calls via OpenAI autolog), tags user/session/request id; attaches thumbs up/down to the answer's trace (`messages.trace_id`) |
+| `tracing.py` | MLflow Tracing: on when `MLFLOW_EXPERIMENT_ID` is set; one trace per question (spans per step; each model call a CHAT_MODEL span with tokens, created in `llm.py`), tags user/session/request id; attaches thumbs up/down to the answer's trace (`messages.trace_id`) |
 | `store/` | `ConversationStore` protocol; `PostgresStore` (Lakebase, OAuth-token pool, versioned migrations) and `SQLiteStore` (in-memory test double) |
 | `static/` | chat UI and citation viewer (vanilla JS; all text inserted with `textContent`) |
 

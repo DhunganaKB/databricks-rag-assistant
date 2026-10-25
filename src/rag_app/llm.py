@@ -6,6 +6,8 @@ import logging
 import threading
 from typing import Protocol
 
+from rag_app import tracing
+
 log = logging.getLogger(__name__)
 
 
@@ -79,9 +81,21 @@ class DatabricksLLM:
         endpoint: str | None = None,
         require_complete: bool = False,
     ) -> str:
+        model = endpoint or self.default_endpoint
+        # one CHAT_MODEL span per call: prompt, answer and token usage in the MLflow trace
+        with tracing.start_span(name=model, span_type=tracing.SpanType.CHAT_MODEL) as span:
+            span.set_inputs({"messages": messages, "max_tokens": max_tokens})
+            text, usage = self._complete(model, messages, max_tokens, temperature, require_complete)
+            span.set_outputs(text)
+            if usage:
+                span.set_attribute(tracing.CHAT_USAGE, usage)
+            return text
+
+    def _complete(
+        self, model: str, messages: list[dict], max_tokens: int, temperature: float | None, require_complete: bool
+    ) -> tuple[str, dict | None]:
         from openai import BadRequestError
 
-        model = endpoint or self.default_endpoint
         kwargs = {"model": model, "messages": messages, "max_tokens": max_tokens, "timeout": self.timeout_s}
         if temperature is not None and model not in self._no_temperature:
             kwargs["temperature"] = temperature
@@ -104,4 +118,10 @@ class DatabricksLLM:
             if require_complete:
                 raise TruncatedOutput(f"{model} stopped at max_tokens={max_tokens}")
             log.warning("%s stopped at max_tokens=%s; answer may be incomplete", model, max_tokens)
-        return text
+        u = getattr(resp, "usage", None)  # not every endpoint reports usage
+        usage = (
+            {"input_tokens": u.prompt_tokens, "output_tokens": u.completion_tokens, "total_tokens": u.total_tokens}
+            if u
+            else None
+        )
+        return text, usage

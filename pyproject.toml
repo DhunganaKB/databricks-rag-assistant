@@ -14,7 +14,7 @@ dependencies = [
     "pillow>=10.4",
     "psycopg[binary]>=3.2",
     "psycopg-pool>=3.2",
-    "mlflow-tracing>=3.4",  # observability; the lightweight tracing-only MLflow package
+    "mlflow-skinny>=3.4",  # observability (tracing); the MLflow variant Databricks Apps preinstalls. Not mlflow-tracing: see tracing.py
 ]
 
 [dependency-groups]

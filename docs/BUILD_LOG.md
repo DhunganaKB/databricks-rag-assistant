@@ -349,11 +349,13 @@ Reading app logs needs an OAuth login (`databricks auth login --profile azure`);
 # Part 6: Observability with MLflow Tracing (2026-10-25)
 
 - **Why:** logs showed that a request happened, not how an answer was produced. MLflow Tracing records one trace per question with a timed span per step, the retrieved passages, prompts and token counts.
-- **Package:** `mlflow-tracing` 3.17.2 (tracing-only MLflow: 6 extra packages). Full `mlflow` had been removed earlier for size.
-- **Code:** `rag_app/tracing.py` (setup, tags, feedback); `@mlflow.trace` on the agent steps, a `RETRIEVER` span for search, `mlflow.openai.autolog()` for model calls. Tracing is off without `MLFLOW_EXPERIMENT_ID` and never fails a request.
+- **Package:** `mlflow-skinny` 3.17.2 (see the first deployment below for why not `mlflow-tracing`). Full `mlflow` had been removed earlier for size.
+- **Code:** `rag_app/tracing.py` (setup, tags, feedback); `@mlflow.trace` on the agent steps, a `RETRIEVER` span for search, a `CHAT_MODEL` span per model call with token usage (in `llm.py`). Tracing is off without `MLFLOW_EXPERIMENT_ID` and never fails a request.
 - **Feedback link:** migration `002_trace_id.sql` adds `messages.trace_id`; `/api/feedback` looks up the trace of the user's *own* answer and calls `mlflow.log_feedback` in the background. Found while testing live: feedback 0.2 s after the answer arrived before the async export (`NOT_FOUND`); `NOT_FOUND` is now retried with backoff.
 - **Deployment:** the bundle creates experiment `/Users/<deployer>/rag-assistant-dev-traces`; app resource `traces` (`CAN_EDIT`) feeds `MLFLOW_EXPERIMENT_ID` via `valueFrom`. Validated with CLI v1.22.1. The smoke test checks that the deployed app reports tracing as on.
 - **Verified locally** against the workspace (experiment `rag-assistant-local-traces`): traces with spans short_term, long_term, condense (Haiku, 288 tokens), retrieve, generate (Sonnet, 1,830 tokens), save_turn; a 👎 with comment attached to the right trace. Tests: 59 passed, 90% coverage.
+
+**First deployment (run 40195386145) failed:** the app crashed on startup with `ImportError: cannot import name 'EvaluationDataset' from 'mlflow.entities'`. The Databricks Apps base environment preinstalls `mlflow-skinny` (an older version); `mlflow-tracing` installs into the same `mlflow` package, giving a mix of two versions. Reproduced locally (skinny 2.21 + tracing 3.17.2 → same error). Fix: depend on `mlflow-skinny` 3.17.2 only. With skinny, `mlflow.openai.autolog()` needs numpy/pandas, so model calls are now traced explicitly in `llm.py` (one CHAT_MODEL span per call, named after the endpoint, with token usage). Verified that both a clean skinny 3.17.2 and the app's leftover state (skinny 3.17.2 + mlflow-tracing 3.17.2) import and trace correctly, and re-ran the live check: spans, tokens and the 👎 feedback reached MLflow.
 
 ## How to reproduce from scratch
 ```bash
