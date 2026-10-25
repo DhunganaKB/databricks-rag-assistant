@@ -271,7 +271,7 @@ footer { margin-top: 70px; color: var(--muted); font-size: 13px; border-top: 1px
 <!-- ===================================================== 5 MEMORY -->
 <section id="memory">
   <h2>5. Memory in Lakebase</h2>
-  <p class="sub">All conversation data lives in Databricks. The deployed app uses its own database (<code>rag_app</code>), separate from local development (<code>databricks_postgres</code>).</p>
+  <p class="sub">All conversation data lives in Databricks, in the Lakebase database <code>rag_app</code>, visible in Catalog Explorer as the catalog <code>rag_app_memory</code>. (Local development uses a separate database, <code>databricks_postgres</code>, so tests never touch real conversations.)</p>
   <div class="table-wrap"><table>
     <thead><tr><th>Table (schema <code>rag_memory</code>)</th><th>Memory type</th><th>Contents</th></tr></thead>
     <tbody>
@@ -299,6 +299,81 @@ footer { margin-top: 70px; color: var(--muted); font-size: 13px; border-top: 1px
       </ul></div>
   </div>
   <div class="callout">Example from the live smoke test: in one chat the user said <em>"I'm a contractor working in the Rotterdam office."</em> In a brand-new chat, <em>"Am I eligible for paid time off?"</em> was answered with <em>"Contractors are not eligible for paid time off under this policy [1]…"</em>.</div>
+
+  <h3>Why Lakebase and not Delta Lake?</h3>
+  <p>Both are Databricks storage, but they are built for opposite jobs. Delta Lake tables are made for analytics: reading and writing large amounts of data in batches. A chat app does the opposite: many tiny reads and writes, one user at a time, that must be immediate. Lakebase (managed PostgreSQL) is built for exactly that.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>What the chat app needs</th><th>Lakebase (Postgres)</th><th>Delta table</th></tr></thead>
+    <tbody>
+      <tr><td>Save a message and read it back on the next question</td><td>a few milliseconds</td><td>seconds per statement through a SQL warehouse, and a warehouse that must be running</td></tr>
+      <tr><td>Many users writing at the same time</td><td>row-level locking; each insert is independent</td><td>each write creates a new table version; many concurrent small writes cause conflicts and many small files</td></tr>
+      <tr><td>Save question + answer together, or neither</td><td>multi-statement transactions</td><td>one statement at a time</td></tr>
+      <tr><td>Reject duplicates (same memory twice, same message retried)</td><td>unique constraints enforced by the database</td><td>constraints are not enforced for uniqueness</td></tr>
+      <tr><td>Permanently delete a user's memory when they ask</td><td>row is gone immediately</td><td>old versions remain in time travel until <code>VACUUM</code></td></tr>
+      <tr><td>Analytics over months of data</td><td>fine at this size; can be synced to Delta later</td><td>excellent</td></tr>
+    </tbody>
+  </table></div>
+  <p>So each kind of data lives where it fits best: the <strong>knowledge</strong> (documents, chunks, index, citation locations) stays in <strong>Delta</strong>, produced by the ETL; the <strong>conversations and memory</strong> live in <strong>Lakebase</strong>. Both are governed in Unity Catalog and both are inside Databricks: nothing is stored on the app's machine.</p>
+
+  <h3>How the Lakebase objects fit together</h3>
+  <div class="diagram" role="img" aria-label="Lakebase layers: the instance rag-memory-dev holds the database rag_app, which holds the schema rag_memory with five tables. The Unity Catalog catalog rag_app_memory points to the rag_app database so it can be browsed and queried in Databricks.">
+  <svg viewBox="0 0 1000 300" xmlns="http://www.w3.org/2000/svg" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13">
+    <defs><marker id="d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+    <rect x="10" y="10" width="640" height="280" rx="14" fill="var(--surface-2)" stroke="var(--c-memory)" stroke-width="2"/>
+    <text x="30" y="38" font-weight="700" fill="var(--c-memory)">Lakebase instance: rag-memory-dev</text>
+    <text x="30" y="56" fill="var(--muted)">the Postgres server (compute + storage)</text>
+    <rect x="30" y="72" width="600" height="200" rx="12" fill="var(--surface)" stroke="var(--line)" stroke-width="1.5"/>
+    <text x="48" y="98" font-weight="700" fill="var(--text)">database: rag_app</text>
+    <text x="210" y="98" fill="var(--muted)">used by the deployed app</text>
+    <rect x="48" y="112" width="564" height="144" rx="10" fill="var(--surface-2)" stroke="var(--line)"/>
+    <text x="64" y="136" font-weight="700" fill="var(--text)">schema: rag_memory</text>
+    <text x="64" y="164" fill="var(--text)">sessions</text>
+    <text x="64" y="186" fill="var(--text)">messages</text>
+    <text x="64" y="208" fill="var(--text)">user_memories</text>
+    <text x="64" y="230" fill="var(--text)">feedback</text>
+    <text x="64" y="252" fill="var(--muted)">schema_migrations</text>
+    <text x="250" y="164" fill="var(--muted)">conversations, title, running summary</text>
+    <text x="250" y="186" fill="var(--muted)">questions, answers, citations</text>
+    <text x="250" y="208" fill="var(--muted)">long-term facts per user</text>
+    <text x="250" y="230" fill="var(--muted)">thumbs up/down, comments</text>
+    <text x="250" y="252" fill="var(--muted)">which migrations have run</text>
+    <rect x="740" y="90" width="250" height="110" rx="12" fill="var(--surface)" stroke="var(--accent)" stroke-width="2"/>
+    <text x="865" y="118" text-anchor="middle" font-weight="700" fill="var(--text)">Unity Catalog catalog</text>
+    <text x="865" y="140" text-anchor="middle" font-weight="700" fill="var(--accent)">rag_app_memory</text>
+    <text x="865" y="164" text-anchor="middle" fill="var(--muted)">a window to browse and</text>
+    <text x="865" y="182" text-anchor="middle" fill="var(--muted)">query rag_app with SQL</text>
+    <line x1="736" y1="145" x2="634" y2="145" stroke="var(--accent)" stroke-width="2" marker-end="url(#d)"/>
+    <text x="685" y="136" text-anchor="middle" fill="var(--accent)" font-size="12">points to</text>
+  </svg>
+  </div>
+  <p>Catalog Explorer also shows <code>information_schema</code>, <code>pg_catalog</code>, <code>public</code> and <code>__db_system</code> under the catalog. These exist in every Postgres database (system catalogs and the default schema) and are not used by the app. Only <code>rag_memory</code> holds app data.</p>
+
+  <h3>How and when each piece was created</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Object</th><th>Created by</th><th>When</th><th>How</th></tr></thead>
+    <tbody>
+      <tr><td>Instance <code>rag-memory-dev</code></td><td>you</td><td>once, at setup</td><td>Databricks UI → Lakebase → create instance</td></tr>
+      <tr><td>Database <code>rag_app</code></td><td>you (as instance owner)</td><td>once, setup step 6</td><td><code>scripts/post_deploy.py --bootstrap-for &lt;deployer&gt;</code>: <code>CREATE DATABASE rag_app</code> and lets the deployer create tables in it</td></tr>
+      <tr><td>Schema <code>rag_memory</code> and its tables</td><td>GitHub Actions, as <code>sp-rag-deployer</code></td><td>first deployment; again whenever a new migration is added</td><td>the <em>Grants and database</em> step runs the SQL files in <code>src/rag_app/store/migrations/</code> (see below); the deployer owns the tables</td></tr>
+      <tr><td>App's access to the tables</td><td>GitHub Actions</td><td>every deployment</td><td>same step: <code>SELECT/INSERT/UPDATE/DELETE</code> for the app's service principal, no right to change the schema</td></tr>
+      <tr><td>Catalog <code>rag_app_memory</code></td><td>you</td><td>once, 2026-10-25</td><td><code>databricks database create-database-catalog rag_app_memory rag-memory-dev rag_app</code>; only needed to view the data, the app does not use it</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>How migrations create the tables</h3>
+  <p>The table definitions are plain SQL files in the repository, numbered in the order they must run: <code>001_initial.sql</code> creates the five tables, their keys and indexes. On every deployment the pipeline:</p>
+  <ol class="steps">
+    <li><strong>Connects as the deployer</strong>using a short-lived Lakebase token generated from its Databricks login (no database password is stored anywhere).</li>
+    <li><strong>Ensures the bookkeeping table</strong><code>CREATE SCHEMA IF NOT EXISTS rag_memory</code> and <code>CREATE TABLE IF NOT EXISTS rag_memory.schema_migrations</code>.</li>
+    <li><strong>Runs only what is new</strong>Each file whose name is not yet in <code>schema_migrations</code> runs inside a transaction, then its name is recorded. If it fails, nothing of it is applied and the deployment stops before the new app version starts.</li>
+    <li><strong>Grants the app access</strong>to all tables, including any just created.</li>
+  </ol>
+  <p>To change the tables later, add <code>002_&lt;what&gt;.sql</code> and push: it runs once, on the next deployment. Files that already ran are never edited. The app itself runs with <code>AUTO_MIGRATE=false</code> and cannot change the tables.</p>
+  <h3>Looking at the data</h3>
+<pre><code>select * from rag_app_memory.rag_memory.messages order by created_at desc;
+select * from rag_app_memory.rag_memory.feedback;
+select * from rag_app_memory.rag_memory.user_memories;</code></pre>
+  <p>Run these in the SQL Editor with any warehouse. Note that a Lakebase catalog cannot be created from <em>Catalog Explorer → Create catalog</em>: that dialog makes a Delta catalog and asks for a storage location. Use the Lakebase instance's <em>Catalogs</em> tab or the command above.</p>
 </section>
 
 <!-- ===================================================== 6 UI -->
