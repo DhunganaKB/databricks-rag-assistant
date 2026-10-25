@@ -85,6 +85,8 @@ class Settings:
     max_answer_tokens: int = 2000
     assistant_name: str = "Knowledge Assistant"
     local_user_id: str = ""
+    # observability: MLflow experiment that receives the traces (empty = tracing off)
+    mlflow_experiment_id: str = ""
 
     def __post_init__(self) -> None:
         for field_name in ("vs_index", "citations_view", "documents_view"):
@@ -128,4 +130,5 @@ class Settings:
             max_answer_tokens=_int("MAX_ANSWER_TOKENS", 2000),
             assistant_name=os.getenv("ASSISTANT_NAME", "Knowledge Assistant"),
             local_user_id=os.getenv("LOCAL_USER_ID", ""),
+            mlflow_experiment_id=os.getenv("MLFLOW_EXPERIMENT_ID", "").strip(),
         )

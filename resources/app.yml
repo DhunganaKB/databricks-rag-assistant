@@ -5,6 +5,13 @@
 # The app therefore needs no tokens or secrets, and the same source code runs in every
 # environment: only these resource bindings differ per target.
 resources:
+  experiments:
+    # MLflow experiment that receives one trace per question (observability). It lives in
+    # the deployer's folder; traces contain questions and answers, so only the deployer,
+    # workspace admins and the app itself (CAN_EDIT below) can open it.
+    rag_traces:
+      name: /Users/${workspace.current_user.userName}/${var.app_name}-traces
+
   apps:
     rag_app:
       name: ${var.app_name}
@@ -56,6 +63,11 @@ resources:
             instance_name: ${var.lakebase_instance}
             database_name: ${var.lakebase_database}
             permission: CAN_CONNECT_AND_CREATE
+        - name: traces
+          description: MLflow experiment for traces and feedback (sets MLFLOW_EXPERIMENT_ID)
+          experiment:
+            experiment_id: ${resources.experiments.rag_traces.id}
+            permission: CAN_EDIT
       permissions:
         - group_name: ${var.app_users_group}
           level: CAN_USE  # who can open the app

@@ -72,6 +72,8 @@ def main() -> int:
         f" schema={health.get('memory_schema')}",
     )
     check("history is stored in Databricks (Lakebase)", health.get("store") == "postgres")
+    if args.databricks_auth:  # the deployed app must send traces to its MLflow experiment
+        check("MLflow tracing is enabled", health.get("tracing") is True)
 
     # --- multi-turn conversation -------------------------------------------------
     turns = [

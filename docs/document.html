@@ -120,11 +120,12 @@ footer { margin-top: 70px; color: var(--muted); font-size: 13px; border-top: 1px
     <li><a href="#github">12. GitHub Actions</a></li>
     <li><a href="#quality">13. Tests and quality gates</a></li>
     <li class="group">Day to day</li>
-    <li><a href="#operate">14. Operating the app</a></li>
-    <li><a href="#local">15. Local development</a></li>
-    <li><a href="#troubleshooting">16. Troubleshooting</a></li>
-    <li><a href="#repo">17. Repository map</a></li>
-    <li><a href="#glossary">18. Glossary</a></li>
+    <li><a href="#observability">14. Observability (MLflow)</a></li>
+    <li><a href="#operate">15. Operating the app</a></li>
+    <li><a href="#local">16. Local development</a></li>
+    <li><a href="#troubleshooting">17. Troubleshooting</a></li>
+    <li><a href="#repo">18. Repository map</a></li>
+    <li><a href="#glossary">19. Glossary</a></li>
   </ol>
 </nav>
 
@@ -142,9 +143,9 @@ footer { margin-top: 70px; color: var(--muted); font-size: 13px; border-top: 1px
   <div class="cards">
     <div class="card"><div class="label">Databricks App</div><div class="value">rag-assistant-dev</div><div class="note">Azure workspace <code>adb-7405616448132971</code></div></div>
     <div class="card"><div class="label">Deployed by</div><div class="value">GitHub Actions</div><div class="note">on every push to <code>main</code></div></div>
-    <div class="card"><div class="label">Smoke test (deployed)</div><div class="value">19 / 19</div><div class="note">end-to-end checks against the live URL</div></div>
+    <div class="card"><div class="label">Smoke test (deployed)</div><div class="value">19 / 19</div><div class="note">end-to-end checks against the live URL (20 with the tracing check)</div></div>
     <div class="card"><div class="label">Evaluation (deployed)</div><div class="value">25 / 25</div><div class="note">correct; every citation has a location</div></div>
-    <div class="card"><div class="label">Unit tests</div><div class="value">53</div><div class="note">91% coverage, plus 4 Lakebase integration tests</div></div>
+    <div class="card"><div class="label">Unit tests</div><div class="value">59</div><div class="note">90% coverage, plus 4 Lakebase integration tests</div></div>
   </div>
   <div class="table-wrap"><table>
     <tbody>
@@ -153,6 +154,7 @@ footer { margin-top: 70px; color: var(--muted); font-size: 13px; border-top: 1px
       <tr><th>Answer model</th><td><code>databricks-claude-sonnet-5-5</code></td></tr>
       <tr><th>Helper model</th><td><code>databricks-claude-haiku-5-5</code> (query rewriting, titles, summaries, memory extraction, evaluation judge)</td></tr>
       <tr><th>Knowledge</th><td>Vector Search index <code>steampunk.dev_kbdhunga_rag_gold.chunks_index</code> (84 chunks from 13 documents)</td></tr>
+      <tr><th>Observability</th><td>MLflow experiment <code>rag-assistant-dev-traces</code>: one trace per question, with user feedback attached</td></tr>
       <tr><th>Memory</th><td>Lakebase instance <code>rag-memory-dev</code>, database <code>rag_app</code>, schema <code>rag_memory</code></td></tr>
     </tbody>
   </table></div>
@@ -225,6 +227,7 @@ footer { margin-top: 70px; color: var(--muted); font-size: 13px; border-top: 1px
     <div class="box model"><h4>Model serving endpoints</h4><p>Claude Sonnet 5.5 writes the answers. Claude Haiku 5.5, faster and cheaper, does the small jobs: rewriting follow-ups, titling chats, summarizing older turns, extracting memories.</p></div>
     <div class="box data"><h4>SQL warehouse + volume</h4><p>Used only by the source viewer: the warehouse looks up the boxes and page images of a citation, and the volume stores the page images the boxes are drawn on.</p></div>
     <div class="box memory"><h4>Lakebase</h4><p>Databricks' managed PostgreSQL. It stores conversations, the running summary, long-term facts about each user, and feedback, with millisecond reads and writes. Nothing is stored on the app's machine.</p></div>
+    <div class="box model"><h4>MLflow experiment</h4><p>Receives one <em>trace</em> per question: every step with its timing, the passages retrieved, the prompts, token counts and the user's thumbs up/down. See <a href="#observability">section 14</a>.</p></div>
     <div class="box gh"><h4>GitHub Actions</h4><p>Tests every change and, for changes merged to <code>main</code>, deploys the app and verifies the deployed version. It signs in as the deployment service principal <code>sp-rag-deployer</code>.</p></div>
   </div>
 </section>
@@ -361,7 +364,7 @@ footer { margin-top: 70px; color: var(--muted); font-size: 13px; border-top: 1px
   </table></div>
 
   <h3>How migrations create the tables</h3>
-  <p>The table definitions are plain SQL files in the repository, numbered in the order they must run: <code>001_initial.sql</code> creates the five tables, their keys and indexes. On every deployment the pipeline:</p>
+  <p>The table definitions are plain SQL files in the repository, numbered in the order they must run: <code>001_initial.sql</code> creates the five tables, their keys and indexes; <code>002_trace_id.sql</code> adds a <code>trace_id</code> column to <code>messages</code> (the link to MLflow, <a href="#observability">section 14</a>). On every deployment the pipeline:</p>
   <ol class="steps">
     <li><strong>Connects as the deployer</strong>using a short-lived Lakebase token generated from its Databricks login (no database password is stored anywhere).</li>
     <li><strong>Ensures the bookkeeping table</strong><code>CREATE SCHEMA IF NOT EXISTS rag_memory</code> and <code>CREATE TABLE IF NOT EXISTS rag_memory.schema_migrations</code>.</li>
@@ -473,6 +476,7 @@ GRANT USE SCHEMA, READ VOLUME, MANAGE ON SCHEMA steampunk.dev_kbdhunga_rag_silve
       <tr><td>Page-image volume</td><td>owner</td><td>READ VOLUME, MANAGE</td><td>READ VOLUME</td><td>none</td></tr>
       <tr><td>SQL warehouse</td><td>Is owner</td><td>Can manage</td><td>Can use</td><td>Can use</td></tr>
       <tr><td>Lakebase instance</td><td>Can manage</td><td>Can manage</td><td>connect to <code>rag_app</code></td><td>none</td></tr>
+      <tr><td>MLflow experiment (traces)</td><td>Can manage (admin)</td><td>Owner (created it)</td><td>Can edit (writes traces)</td><td>none</td></tr>
       <tr><td>Memory tables (<code>rag_app.rag_memory.*</code>)</td><td>none</td><td>owner (creates and changes them)</td><td>SELECT / INSERT / UPDATE / DELETE only</td><td>none</td></tr>
       <tr><td>Claude endpoints</td><td>Can query</td><td>Can query</td><td>Can query</td><td>Can query</td></tr>
     </tbody>
@@ -560,6 +564,7 @@ GRANT USE SCHEMA, READ VOLUME, MANAGE ON SCHEMA steampunk.dev_kbdhunga_rag_silve
       <tr><td><code>SQL_WAREHOUSE_ID</code></td><td>resource</td><td>warehouse for the viewer (required)</td></tr>
       <tr><td><code>LLM_ENDPOINT</code>, <code>HELPER_LLM_ENDPOINT</code></td><td>resources</td><td>answer and helper models</td></tr>
       <tr><td><code>PGHOST</code>, <code>PGUSER</code>, <code>PGDATABASE</code></td><td>set by the <code>memory-db</code> resource</td><td>Lakebase connection</td></tr>
+      <tr><td><code>MLFLOW_EXPERIMENT_ID</code>, <code>MLFLOW_TRACKING_URI</code></td><td><code>traces</code> resource (valueFrom), <code>databricks</code></td><td>where traces go; empty = tracing off</td></tr>
       <tr><td><code>STORE_BACKEND</code>, <code>PG_SCHEMA</code>, <code>AUTO_MIGRATE</code></td><td><code>postgres</code>, <code>rag_memory</code>, <code>false</code></td><td>memory store; the pipeline applies schema changes</td></tr>
       <tr><td><code>HISTORY_TURNS</code></td><td>5</td><td>turns sent word for word</td></tr>
       <tr><td><code>LONG_TERM_MEMORY</code>, <code>MEMORY_EVERY_N_TURNS</code></td><td>true, 3</td><td>long-term memory on, extraction cadence</td></tr>
@@ -577,7 +582,7 @@ GRANT USE SCHEMA, READ VOLUME, MANAGE ON SCHEMA steampunk.dev_kbdhunga_rag_silve
   <div class="table-wrap"><table>
     <thead><tr><th>File</th><th>Runs when</th><th>Does</th></tr></thead>
     <tbody>
-      <tr><td><code>ci.yml</code></td><td>pull requests, pushes to other branches, and as the first job of every deployment</td><td>Lint, format check, 53 tests (fails below 80% coverage), check that <code>requirements.txt</code> matches the lock file</td></tr>
+      <tr><td><code>ci.yml</code></td><td>pull requests, pushes to other branches, and as the first job of every deployment</td><td>Lint, format check, 59 tests (fails below 80% coverage), check that <code>requirements.txt</code> matches the lock file</td></tr>
       <tr><td><code>deploy.yml</code></td><td>push to <code>main</code>, manual run</td><td>Runs <code>ci.yml</code>, then <code>_deploy.yml</code> for environment <code>dev</code></td></tr>
       <tr><td><code>_deploy.yml</code></td><td>called by <code>deploy.yml</code></td><td>The deployment steps below</td></tr>
     </tbody>
@@ -586,10 +591,10 @@ GRANT USE SCHEMA, READ VOLUME, MANAGE ON SCHEMA steampunk.dev_kbdhunga_rag_silve
     <li><strong>Prepare</strong>Check out the code, install <code>uv</code> and the locked dependencies, install the Databricks CLI (pinned version 1.22.1).</li>
     <li><strong>Check configuration and identity</strong>Fails with a clear message if a GitHub variable or the secret is missing; signs in and prints <code>deploying as: 79aa523d-…</code>.</li>
     <li><strong>Validate bundle</strong><code>databricks bundle validate</code> checks <code>databricks.yml</code> and <code>resources/app.yml</code>, and reads the resolved names (app, Lakebase, warehouse, schemas) for later steps.</li>
-    <li><strong>Deploy bundle</strong><code>databricks bundle deploy</code> uploads the code to the deployer's private folder and creates or updates the app, its resources and permissions. On the very first run, Databricks creates the app's service principal here.</li>
+    <li><strong>Deploy bundle</strong><code>databricks bundle deploy</code> uploads the code to the deployer's private folder and creates or updates the app, its resources and permissions, and the MLflow experiment for traces. On the very first run, Databricks creates the app's service principal here.</li>
     <li><strong>Grants and database</strong><code>scripts/post_deploy.py</code> (1) gives the app's service principal read access to the gold tables and volume in Unity Catalog, (2) applies pending Lakebase migrations, (3) gives the app data-only access to the memory tables, (4) verifies those grants.</li>
     <li><strong>Deploy and start the app</strong><code>databricks bundle run</code> installs <code>requirements.txt</code> in the app, starts it, and waits until it reports success.</li>
-    <li><strong>Smoke test</strong><code>scripts/smoke_test.py</code> calls the live app as the pipeline identity. It runs a 7-turn conversation, checks memory, boxes and spans, the source viewer and idempotency, then deletes the data it created.</li>
+    <li><strong>Smoke test</strong><code>scripts/smoke_test.py</code> calls the live app as the pipeline identity. It runs a 7-turn conversation, checks memory, boxes and spans, the source viewer, idempotency and that MLflow tracing is on, then deletes the data it created.</li>
     <li><strong>Evaluation gate</strong><code>scripts/run_eval.py</code> asks the live app 25 questions with known answers; a judge model grades them. The run fails below 90% correct. The report is attached to the run as <code>eval-report-dev</code>.</li>
     <li><strong>Summary</strong>The run page shows the app URL, the commit and the evaluation result.</li>
   </ol>
@@ -602,7 +607,7 @@ GRANT USE SCHEMA, READ VOLUME, MANAGE ON SCHEMA steampunk.dev_kbdhunga_rag_silve
   <div class="table-wrap"><table>
     <thead><tr><th>Check</th><th>What it proves</th><th>Where it runs</th><th>Latest result</th></tr></thead>
     <tbody>
-      <tr><td>Unit and API tests (53)</td><td>Logic is correct with all external services replaced by fakes: history window, citations with boxes, memory, privacy, input validation, retries, config, grants</td><td>every PR and deploy</td><td>passed, 91% coverage</td></tr>
+      <tr><td>Unit and API tests (59)</td><td>Logic is correct with all external services replaced by fakes: history window, citations with boxes, memory, privacy, input validation, retries, config, grants, tracing and the feedback link</td><td>every PR and deploy</td><td>passed, 90% coverage</td></tr>
       <tr><td>Lakebase integration tests (4)</td><td>The real Postgres store works: transactions, isolation, de-duplication, cascade delete</td><td>locally (<code>make test-integration</code>)</td><td>passed</td></tr>
       <tr><td>Smoke test</td><td>The deployed app works end to end</td><td>every deploy</td><td>19/19</td></tr>
       <tr><td>Evaluation (25 questions)</td><td>Answers are correct, grounded and cited; questions with no answer are declined</td><td>every deploy (gate ≥ 90%)</td><td>25/25 correct, 100% retrieval hit, 100% located</td></tr>
@@ -610,9 +615,86 @@ GRANT USE SCHEMA, READ VOLUME, MANAGE ON SCHEMA steampunk.dev_kbdhunga_rag_silve
   </table></div>
 </section>
 
-<!-- ===================================================== 14 OPERATE -->
+<!-- ===================================================== 14 OBSERVABILITY -->
+<section id="observability">
+  <h2>14. Observability with MLflow Tracing</h2>
+  <p class="sub">Logs say <em>that</em> something happened. A trace shows <em>how</em> one answer was produced: every step, how long it took, what was retrieved, what the model was sent, how many tokens it used, and what the user thought of the answer.</p>
+
+  <h3>What gets recorded</h3>
+  <p>Each question produces one <strong>trace</strong> in the MLflow experiment <code>rag-assistant-dev-traces</code>. A trace is a tree of timed <strong>spans</strong>. A real trace from the follow-up question <em>"And how did it compare to Q2?"</em>:</p>
+<pre><code>trace  tr-55e9…   user=local.developer@…   session=01a1731d-dbf9…   client_request_id=01a1731d-e898…
+ chat                AGENT        5,889 ms
+   short_term        MEMORY          40 ms   last 5 turns + running summary
+   long_term         MEMORY          63 ms   facts about the user
+   condense          CHAIN        1,001 ms   "And how…Q2?" → standalone search query
+     Completions     CHAT_MODEL   1,000 ms   Claude Haiku · 288 tokens
+   retrieve          RETRIEVER      394 ms   8 passages: chunk id, document, score, text
+   generate          CHAIN        4,189 ms
+     Completions     CHAT_MODEL   4,187 ms   Claude Sonnet · 1,319 in / 511 out tokens
+   save_turn                        215 ms   Lakebase write (stores the trace id)
+ assessments: user_feedback = 👎  by local.developer@…  "live tracing check"</code></pre>
+  <p>From this one trace you can see that the answer model took 70% of the time, which passages were used, and that the user disliked the answer. The background work after each answer (title, summary, memory extraction) is recorded as a separate <code>maintain</code> trace for the same session.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Recorded</th><th>Where it comes from</th></tr></thead>
+    <tbody>
+      <tr><td>Steps and their timing</td><td><code>@mlflow.trace</code> on the agent's steps (<code>src/rag_app/agent.py</code>)</td></tr>
+      <tr><td>Prompts, answers, token counts per model call</td><td><code>mlflow.openai.autolog()</code>: every call to the Claude endpoints becomes a <code>Completions</code> span automatically</td></tr>
+      <tr><td>Retrieved passages</td><td>a <code>RETRIEVER</code> span; MLflow displays its outputs as a document list</td></tr>
+      <tr><td>Who, which chat, which request</td><td>trace tags: <code>user</code>, <code>session</code>, <code>client_request_id</code> = our <code>request_id</code></td></tr>
+      <tr><td>Errors</td><td>a failing step marks its span and the trace as <em>error</em>, with the exception</td></tr>
+      <tr><td>Thumbs up/down + comment</td><td>an <em>assessment</em> named <code>user_feedback</code> on the trace (see below)</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>How feedback reaches the right trace</h3>
+  <ol class="steps">
+    <li><strong>Answer</strong>While answering, the app stores the trace id next to the answer in Lakebase (<code>messages.trace_id</code>, added by migration <code>002_trace_id.sql</code>).</li>
+    <li><strong>Click</strong>The user clicks 👍 or 👎. The browser sends only the answer's <code>request_id</code>.</li>
+    <li><strong>Lookup</strong>The app saves the feedback in Lakebase and looks up the trace id <em>for that user's own answer</em>. Feedback on someone else's answer is stored but never linked.</li>
+    <li><strong>Attach</strong>After responding, a background task calls <code>mlflow.log_feedback</code>. If the trace is still being exported (feedback within a second or two), it retries for up to ~15 seconds.</li>
+  </ol>
+
+  <h3>How it is deployed</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Piece</th><th>File</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td>The experiment</td><td><code>resources/app.yml</code> → <code>experiments.rag_traces</code></td><td>The bundle creates <code>/Users/&lt;deployer&gt;/rag-assistant-dev-traces</code> on the first deployment</td></tr>
+      <tr><td>Permission for the app</td><td><code>resources/app.yml</code> → app resource <code>traces</code></td><td>Gives the app's service principal <em>Can edit</em> on the experiment, so it can write traces</td></tr>
+      <tr><td>Configuration</td><td><code>app.yaml</code></td><td><code>MLFLOW_EXPERIMENT_ID</code> from the <code>traces</code> resource; <code>MLFLOW_TRACKING_URI=databricks</code></td></tr>
+      <tr><td>Code</td><td><code>src/rag_app/tracing.py</code></td><td>Turns tracing on at startup when an experiment is configured; tags traces; sends feedback</td></tr>
+      <tr><td>Package</td><td><code>pyproject.toml</code></td><td><code>mlflow-tracing</code>: the lightweight tracing-only part of MLflow (6 extra packages here, instead of over a hundred for full MLflow)</td></tr>
+      <tr><td>Check</td><td><code>scripts/smoke_test.py</code></td><td>Every deployment fails if the live app reports tracing as off</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout ok"><strong>Safe by design.</strong> Traces are sent in the background, so they don't slow answers down. If MLflow is unreachable, the app keeps answering: tracing errors are logged, never shown to users. Without <code>MLFLOW_EXPERIMENT_ID</code> (tests, or a laptop without an experiment) tracing is simply off.</div>
+
+  <h3>Using it</h3>
+  <ol class="steps">
+    <li><strong>Open the experiment</strong>Left menu → <em>Experiments</em> (under AI/ML) → <code>rag-assistant-dev-traces</code> → <em>Traces</em> tab. It is in the deployer's folder, so you may need to clear an "owned by me" filter.</li>
+    <li><strong>Find a trace</strong>Filter or search by user, session, request ID (the <code>request_id</code> in <code>rag_app_memory.rag_memory.messages</code>), time, status or execution time.</li>
+    <li><strong>Open it</strong>The left side shows the span tree with a timeline; click a span to see its inputs, outputs and attributes. The <em>Assessments</em> panel shows user feedback.</li>
+    <li><strong>Common questions</strong><em>Why was this answer wrong?</em> Open the 👎 trace and check the <code>retrieve</code> span: was the right passage retrieved? <em>Why was it slow?</em> Compare span durations. <em>What does an answer cost?</em> Read the token counts on the <code>Completions</code> spans.</li>
+  </ol>
+  <div class="callout warn"><strong>Privacy:</strong> traces contain users' questions, answers and email addresses, like the <code>rag_app_memory</code> tables. Only the deployer, workspace admins and the app can open the experiment. To give a reviewer access, add a permission for them on the experiment in <code>resources/app.yml</code> rather than in the UI, so the next deployment doesn't undo it.</div>
+
+  <h3>Local development</h3>
+  <p>Set <code>MLFLOW_EXPERIMENT_ID</code> in <code>.env</code> to send local traces to your own experiment (currently <code>/Users/kbdhunga@mtu.edu/rag-assistant-local-traces</code>, id <code>3011175212332597</code>). Leave it empty to run without tracing.</p>
+
+  <h3>What can be added next</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Option</th><th>Benefit</th></tr></thead>
+    <tbody>
+      <tr><td>MLflow production monitoring</td><td>LLM judges (groundedness, relevance, safety, your own guidelines) score a sample of these traces automatically, giving quality trends on real traffic</td></tr>
+      <tr><td>Traces in Unity Catalog</td><td>Store traces as Delta tables: longer retention, SQL and dashboards over them, UC permissions</td></tr>
+      <tr><td>AI Gateway on the Claude endpoints</td><td>Token usage per caller in system tables, rate limits, guardrails, without code changes</td></tr>
+      <tr><td>Dashboard and alerts</td><td>👎 rate, latency and cost over time, with an alert when they cross a threshold</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ===================================================== 15 OPERATE -->
 <section id="operate">
-  <h2>14. Operating the app</h2>
+  <h2>15. Operating the app</h2>
   <div class="table-wrap"><table>
     <thead><tr><th>Task</th><th>How</th></tr></thead>
     <tbody>
@@ -625,13 +707,14 @@ GRANT USE SCHEMA, READ VOLUME, MANAGE ON SCHEMA steampunk.dev_kbdhunga_rag_silve
       <tr><td>Rotate the secret</td><td>Generate a new secret (scopes empty) on <code>sp-rag-deployer</code>, update <code>DATABRICKS_CLIENT_SECRET</code> in the GitHub environment, delete the old secret. Do this before the secret's expiry date (shown on the <em>Secrets</em> tab).</td></tr>
       <tr><td>Save cost</td><td>Stop the app when unused (Apps → <em>Stop</em>); the next deployment starts it again.</td></tr>
       <tr><td>Correlate an error</td><td>Every response carries an <code>x-request-id</code>, which appears in every log line for that request.</td></tr>
+      <tr><td>Investigate a slow or wrong answer</td><td>Open the MLflow experiment <code>rag-assistant-dev-traces</code> → <em>Traces</em>, filter by user, session or request ID (<a href="#observability">section 14</a>).</td></tr>
     </tbody>
   </table></div>
 </section>
 
 <!-- ===================================================== 15 LOCAL -->
 <section id="local">
-  <h2>15. Local development</h2>
+  <h2>16. Local development</h2>
   <p class="sub">Run the same app on your laptop against the same Databricks services. It uses its own Lakebase database (<code>databricks_postgres</code>) and still stores nothing on the laptop.</p>
 <pre><code>make install                 # dependencies from uv.lock
 scripts/bootstrap_env.sh     # create .env (git-ignored) with your token
@@ -644,7 +727,7 @@ make eval                    # 25-question evaluation</code></pre>
 
 <!-- ===================================================== 16 TROUBLESHOOTING -->
 <section id="troubleshooting">
-  <h2>16. Troubleshooting</h2>
+  <h2>17. Troubleshooting</h2>
   <p class="sub">The first five rows are problems actually met while setting this up.</p>
   <div class="table-wrap"><table>
     <thead><tr><th>Symptom</th><th>Cause</th><th>Fix</th></tr></thead>
@@ -664,7 +747,7 @@ make eval                    # 25-question evaluation</code></pre>
 
 <!-- ===================================================== 17 REPO -->
 <section id="repo">
-  <h2>17. Repository map</h2>
+  <h2>18. Repository map</h2>
 <pre><code>databricks.yml              what is deployed where (variables, target dev)
 resources/app.yml           the app and its resources (permissions)
 app.yaml                    app start command and environment variables
@@ -677,6 +760,7 @@ src/rag_app/
   llm.py                    calls the Claude endpoints
   prompts.py                all instructions given to the models
   retry.py                  automatic retry of temporary Databricks errors
+  tracing.py                MLflow Tracing setup, trace tags, feedback to traces
   config.py models.py       settings and data shapes
   store/postgres.py         Lakebase store
   store/migrations/*.sql    database changes, applied in order
@@ -689,14 +773,14 @@ scripts/
   migrate.py                local migrations
   bootstrap_env.sh          creates .env for local use
 eval/eval_set.json          evaluation questions with expected facts
-tests/                      53 unit/API tests + 4 Lakebase integration tests
+tests/                      59 unit/API tests + 4 Lakebase integration tests
 .github/workflows/          ci.yml, deploy.yml, _deploy.yml
 docs/                       BUILD_LOG.md, ARCHITECTURE.md, API.md, DEPLOYMENT.md, this guide</code></pre>
 </section>
 
 <!-- ===================================================== 18 GLOSSARY -->
 <section id="glossary">
-  <h2>18. Glossary</h2>
+  <h2>19. Glossary</h2>
   <div class="table-wrap"><table>
     <tbody>
       <tr><th>RAG</th><td>Retrieval-augmented generation: find relevant passages first, then let the model answer from them.</td></tr>
@@ -712,12 +796,14 @@ docs/                       BUILD_LOG.md, ARCHITECTURE.md, API.md, DEPLOYMENT.md
       <tr><th>Asset Bundle</th><td>Files (<code>databricks.yml</code> + resources) that describe what to deploy, deployed with the Databricks CLI.</td></tr>
       <tr><th>GitHub environment</th><td>A named set of variables and secrets in GitHub, released only to jobs that use it.</td></tr>
       <tr><th>Migration</th><td>A versioned, ordered change to the database structure.</td></tr>
+      <tr><th>Trace / span</th><td>A trace is the record of one request; spans are its timed steps (search, model call, …), nested inside it.</td></tr>
+      <tr><th>MLflow experiment</th><td>A container in Databricks where MLflow stores traces (and runs, evaluations).</td></tr>
       <tr><th>Smoke test / evaluation gate</th><td>Automatic checks of the deployed app; a failure stops the pipeline.</td></tr>
     </tbody>
   </table></div>
 </section>
 
-<footer>RAG Knowledge Assistant: application guide. Reflects the deployment of commit <code>9ba1a15</code> on 2026-10-24. The ETL pipeline is documented separately.</footer>
+<footer>RAG Knowledge Assistant: application guide. Updated 2026-10-25 (MLflow Tracing). The ETL pipeline is documented separately.</footer>
 </main>
 </div>
 <script>

@@ -21,6 +21,12 @@ env:
   - name: PAGE_IMAGE_VOLUME
     valueFrom: page-images
 
+  # --- observability: MLflow Tracing into the experiment created by the bundle
+  - name: MLFLOW_EXPERIMENT_ID
+    valueFrom: traces
+  - name: MLFLOW_TRACKING_URI
+    value: databricks
+
   # --- memory store: Lakebase (connection details come from the memory-db resource)
   - name: STORE_BACKEND
     value: postgres

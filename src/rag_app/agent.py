@@ -10,7 +10,9 @@ chat(user_id, message, session_id, client_message_id) ->
   6. hybrid retrieval -> max N chunks per document -> numbered context
   7. answer with [n] citations
   8. map [n] -> citations WITH their boxes / spans (already on the hits)
-  9. persist the turn atomically
+  9. persist the turn atomically (with the MLflow trace id, so feedback can be linked)
+
+Each step is a span of the turn's MLflow trace (see tracing.py).
 
 maintain(user_id, session_id) runs after the response is sent (background):
   - session title after the first turn
@@ -26,7 +28,7 @@ import re
 import time
 from dataclasses import dataclass
 
-from rag_app import prompts
+from rag_app import prompts, tracing
 from rag_app.config import Settings
 from rag_app.llm import ChatModel
 from rag_app.models import ChatResponse, Citation
@@ -121,6 +123,7 @@ class RagAgent:
     llm: ChatModel
 
     # ------------------------------------------------------------------ memory reads
+    @tracing.trace(span_type=tracing.SpanType.MEMORY)
     def short_term(self, session: dict, user_id: str) -> tuple[str, list[dict]]:
         """(running summary of older turns, last HISTORY_TURNS turns verbatim)."""
         turn_count = int(session.get("turn_count") or 0)
@@ -128,12 +131,14 @@ class RagAgent:
         recent = self.store.turns_between(str(session["session_id"]), user_id, window_start) if turn_count else []
         return (session.get("running_summary") or ""), recent
 
+    @tracing.trace(span_type=tracing.SpanType.MEMORY)
     def long_term(self, user_id: str) -> list[dict]:
         if not self.settings.long_term_memory:
             return []
         return self.store.list_memories(user_id, self.settings.max_memories_in_prompt)
 
     # ------------------------------------------------------------------ steps
+    @tracing.trace(span_type=tracing.SpanType.CHAIN)
     def condense(self, message: str, summary: str, history: list[dict]) -> str:
         if not history and not summary:
             return message
@@ -154,9 +159,25 @@ class RagAgent:
         return query or message
 
     def retrieve(self, query: str) -> list[Hit]:
-        candidates = self.retriever.search(query, self.settings.num_results * 3)
-        return diversify(candidates, self.settings.num_results, self.settings.max_chunks_per_doc)
+        with tracing.start_span(name="retrieve", span_type=tracing.SpanType.RETRIEVER) as span:
+            span.set_inputs({"query": query})
+            candidates = self.retriever.search(query, self.settings.num_results * 3)
+            hits = diversify(candidates, self.settings.num_results, self.settings.max_chunks_per_doc)
+            # MLflow shows RETRIEVER outputs in this shape as a list of documents
+            span.set_outputs(
+                [
+                    {
+                        "id": h.chunk_id,
+                        "page_content": h.text,
+                        "metadata": {"doc_uri": h.path, "title": h.label(), "score": h.score},
+                    }
+                    for h in hits
+                ]
+            )
+            span.set_attribute("candidates", len(candidates))
+            return hits
 
+    @tracing.trace(span_type=tracing.SpanType.CHAIN)
     def generate(self, message: str, hits: list[Hit], summary: str, history: list[dict], memories: list[dict]) -> str:
         system = prompts.ANSWER_SYSTEM.format(assistant_name=self.settings.assistant_name)
         if memories:
@@ -173,6 +194,7 @@ class RagAgent:
         return self.llm.complete(messages, max_tokens=self.settings.max_answer_tokens, temperature=0.1)
 
     # ------------------------------------------------------------------ turn
+    @tracing.trace(span_type=tracing.SpanType.AGENT)
     def chat(
         self, user_id: str, message: str, session_id: str | None = None, client_message_id: str | None = None
     ) -> ChatResponse:
@@ -188,6 +210,8 @@ class RagAgent:
         else:
             session = self.store.create_session(user_id)
         sid = str(session["session_id"])
+        request_id = uuid7()
+        tracing.tag_trace(user=user_id, session_id=sid, request_id=request_id)
 
         if client_message_id:
             previous = self.store.find_turn_by_client_id(sid, user_id, client_message_id)
@@ -209,19 +233,20 @@ class RagAgent:
         hits = self.retrieve(query)
         answer = self.generate(message, hits, summary, history, memories)
         citations = build_citations(answer, hits)
-        request_id = uuid7()
         latency_ms = int((time.time() - started) * 1000)
-        turn = self.store.append_turn(
-            sid,
-            user_id,
-            message,
-            answer,
-            client_message_id=client_message_id,
-            standalone_query=query,
-            citations=[c.model_dump() for c in citations],
-            request_id=request_id,
-            latency_ms=latency_ms,
-        )
+        with tracing.start_span(name="save_turn"):
+            turn = self.store.append_turn(
+                sid,
+                user_id,
+                message,
+                answer,
+                client_message_id=client_message_id,
+                standalone_query=query,
+                citations=[c.model_dump() for c in citations],
+                request_id=request_id,
+                latency_ms=latency_ms,
+                trace_id=tracing.current_trace_id(),
+            )
         if memories:
             self.store.touch_memories(user_id, [str(m["memory_id"]) for m in memories])
         log.info(
@@ -235,6 +260,7 @@ class RagAgent:
             len(citations),
             latency_ms,
         )
+        tracing.tag_trace(user=user_id, session_id=sid, request_id=request_id, turn=turn, citations=len(citations))
         return ChatResponse(
             session_id=sid,
             request_id=request_id,
@@ -249,8 +275,10 @@ class RagAgent:
         )
 
     # ------------------------------------------------------------------ background maintenance
+    @tracing.trace(span_type=tracing.SpanType.TASK)
     def maintain(self, user_id: str, session_id: str) -> dict:
         """Runs after the response; never affects the answer the user already received."""
+        tracing.tag_trace(user=user_id, session_id=session_id, kind="maintenance")
         session = self.store.get_session(session_id, user_id)
         if not session:
             return {}

@@ -197,6 +197,7 @@ class PostgresStore:
         citations: list[dict],
         request_id: str,
         latency_ms: int,
+        trace_id: str | None = None,
     ) -> int:
         # The row lock serializes concurrent turns on one session (e.g. two browser tabs).
         with self.pool.connection() as conn, conn.transaction(), conn.cursor() as cur:
@@ -215,8 +216,18 @@ class PostgresStore:
             )
             cur.execute(
                 f"INSERT INTO {self.s}.messages (message_id, session_id, turn_index, role, content, standalone_query, "
-                f"citations, request_id, latency_ms) VALUES (%s, %s, %s, 'assistant', %s, %s, %s, %s, %s)",
-                (uuid7(), session_id, turn, answer, standalone_query, json.dumps(citations), request_id, latency_ms),
+                f"citations, request_id, latency_ms, trace_id) VALUES (%s, %s, %s, 'assistant', %s, %s, %s, %s, %s, %s)",
+                (
+                    uuid7(),
+                    session_id,
+                    turn,
+                    answer,
+                    standalone_query,
+                    json.dumps(citations),
+                    request_id,
+                    latency_ms,
+                    trace_id,
+                ),
             )
             cur.execute(
                 f"UPDATE {self.s}.sessions SET turn_count = %s, last_active_at = now() WHERE session_id = %s",
@@ -261,9 +272,18 @@ class PostgresStore:
             )
 
     # -- feedback --------------------------------------------------------------------------------
-    def add_feedback(self, user_id: str, request_id: str, rating: int, comment: str | None) -> None:
-        self._exec(
-            f"INSERT INTO {self.s}.feedback (feedback_id, user_id, request_id, rating, comment) "
-            f"VALUES (%s, %s, %s, %s, %s)",
-            (uuid7(), user_id, request_id, rating, comment),
-        )
+    def add_feedback(self, user_id: str, request_id: str, rating: int, comment: str | None) -> str | None:
+        with self.pool.connection() as conn, conn.transaction(), conn.cursor() as cur:
+            cur.execute(
+                f"INSERT INTO {self.s}.feedback (feedback_id, user_id, request_id, rating, comment) "
+                f"VALUES (%s, %s, %s, %s, %s)",
+                (uuid7(), user_id, request_id, rating, comment),
+            )
+            # only the owner's own answer can be linked to its trace
+            cur.execute(
+                f"SELECT m.trace_id FROM {self.s}.messages m JOIN {self.s}.sessions s ON s.session_id = m.session_id "
+                f"WHERE m.request_id = %s AND m.role = 'assistant' AND s.user_id = %s",
+                (request_id, user_id),
+            )
+            row = cur.fetchone()
+        return row[0] if row else None

@@ -19,7 +19,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from rag_app import __version__
+from rag_app import __version__, tracing
 from rag_app.agent import RagAgent, SessionNotFound
 from rag_app.config import Settings
 from rag_app.documents import DocumentService, annotate_page
@@ -44,6 +44,10 @@ def _build_real(settings: Settings):
     from rag_app.store import build_store
 
     w = WorkspaceClient()
+    try:
+        tracing.setup(settings.mlflow_experiment_id)
+    except Exception:  # observability is optional: the app still serves answers without it
+        log.exception("MLflow tracing could not be enabled; continuing without traces")
     store = build_store(settings, w)
     agent = RagAgent(
         settings, store, VectorSearchRetriever(w, settings.vs_index), DatabricksLLM(w, settings.llm_endpoint)
@@ -136,6 +140,7 @@ def create_app(
             "store": s.store_backend,
             "memory_schema": s.pg_schema if s.store_backend == "postgres" else None,
             "long_term_memory": s.long_term_memory,
+            "tracing": tracing.enabled(),
         }
 
     @app.get("/api/me")
@@ -183,8 +188,11 @@ def create_app(
         return {"deleted": session_id}
 
     @app.post("/api/feedback")
-    def feedback(body: FeedbackRequest, request: Request):
-        state["agent"].store.add_feedback(user_of(request), body.request_id, body.rating, body.comment)
+    def feedback(body: FeedbackRequest, request: Request, background: BackgroundTasks):
+        user = user_of(request)
+        trace_id = state["agent"].store.add_feedback(user, body.request_id, body.rating, body.comment)
+        if trace_id:  # also attach it to the answer's MLflow trace, after responding
+            background.add_task(tracing.log_user_feedback, trace_id, user, body.rating, body.comment)
         return {"ok": True}
 
     # -- long-term memory (user-visible and user-deletable) ---------------------------------

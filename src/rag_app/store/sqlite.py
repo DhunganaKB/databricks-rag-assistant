@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS messages (
   message_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
   turn_index INTEGER NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, client_message_id TEXT,
-  standalone_query TEXT, citations TEXT, request_id TEXT, latency_ms INTEGER,
+  standalone_query TEXT, citations TEXT, request_id TEXT, latency_ms INTEGER, trace_id TEXT,
   created_at TEXT NOT NULL DEFAULT ({_NOW}), UNIQUE (session_id, turn_index, role));
 CREATE UNIQUE INDEX IF NOT EXISTS messages_client_id ON messages(session_id, client_message_id)
   WHERE client_message_id IS NOT NULL;
@@ -152,6 +152,7 @@ class SQLiteStore:
         citations: list[dict],
         request_id: str,
         latency_ms: int,
+        trace_id: str | None = None,
     ) -> int:
         with self._tx() as c:
             row = c.execute(
@@ -167,8 +168,18 @@ class SQLiteStore:
             )
             c.execute(
                 "INSERT INTO messages (message_id, session_id, turn_index, role, content, standalone_query, citations, "
-                "request_id, latency_ms) VALUES (?, ?, ?, 'assistant', ?, ?, ?, ?, ?)",
-                (uuid7(), session_id, turn, answer, standalone_query, json.dumps(citations), request_id, latency_ms),
+                "request_id, latency_ms, trace_id) VALUES (?, ?, ?, 'assistant', ?, ?, ?, ?, ?, ?)",
+                (
+                    uuid7(),
+                    session_id,
+                    turn,
+                    answer,
+                    standalone_query,
+                    json.dumps(citations),
+                    request_id,
+                    latency_ms,
+                    trace_id,
+                ),
             )
             c.execute(
                 f"UPDATE sessions SET turn_count = ?, last_active_at = {_NOW} WHERE session_id = ?", (turn, session_id)
@@ -210,9 +221,15 @@ class SQLiteStore:
                 )
 
     # feedback ---------------------------------------------------------------------------
-    def add_feedback(self, user_id: str, request_id: str, rating: int, comment: str | None) -> None:
+    def add_feedback(self, user_id: str, request_id: str, rating: int, comment: str | None) -> str | None:
         with self._tx() as c:
             c.execute(
                 "INSERT INTO feedback (feedback_id, user_id, request_id, rating, comment) VALUES (?, ?, ?, ?, ?)",
                 (uuid7(), user_id, request_id, rating, comment),
             )
+            row = c.execute(
+                "SELECT m.trace_id FROM messages m JOIN sessions s ON s.session_id = m.session_id "
+                "WHERE m.request_id = ? AND m.role = 'assistant' AND s.user_id = ?",
+                (request_id, user_id),
+            ).fetchone()
+        return row[0] if row else None

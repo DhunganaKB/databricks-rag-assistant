@@ -79,6 +79,7 @@ class ConversationStore(Protocol):
         citations: list[dict],
         request_id: str,
         latency_ms: int,
+        trace_id: str | None = None,
     ) -> int: ...
 
     # long-term memory
@@ -95,4 +96,6 @@ class ConversationStore(Protocol):
     def touch_memories(self, user_id: str, memory_ids: list[str]) -> None: ...
 
     # feedback
-    def add_feedback(self, user_id: str, request_id: str, rating: int, comment: str | None) -> None: ...
+    def add_feedback(self, user_id: str, request_id: str, rating: int, comment: str | None) -> str | None:
+        """Store the rating; returns the MLflow trace id of the rated answer if it is this user's."""
+        ...
